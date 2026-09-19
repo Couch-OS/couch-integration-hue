@@ -1,0 +1,28 @@
+[package]
+name = "couch-hue"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Philips Hue bridge client for Couch: lights, rooms and scenes over the local v2 API"
+repository = "https://github.com/Couch-OS/couch-integration-hue"
+
+[dependencies]
+# The pinned-certificate verifier and the private credential writer stay owned
+# by Couch. Pinning one immutable Couch revision here prevents an independent
+# release from silently changing what it shares with the host.
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "00ab4da2e6336a925e93702507c0b7b233012738", features = ["tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "=3.4.1", default-features = false, features = ["rustls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+url = "2"
+
+[dev-dependencies]
+tiny_http = "0.12"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

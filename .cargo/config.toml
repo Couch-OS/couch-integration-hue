@@ -1,0 +1,4 @@
+# Host C linkers cannot link the ARMv7 musl target. rust-lld ships with the
+# Rust toolchain and produces the static plugin executable used by Couch.
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
