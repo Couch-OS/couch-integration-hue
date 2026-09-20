@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "protocol_version": 3,
+  "id": "hue",
+  "tier": "preview",
+  "synthetic": false,
+  "cargo_manifest": "Cargo.toml",
+  "cargo_package": "couch-hue",
+  "binary": "couch-plugin-hue",
+  "manifest": "plugin.json"
+}

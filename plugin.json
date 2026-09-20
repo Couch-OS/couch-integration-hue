@@ -1,0 +1,87 @@
+{
+  "protocol_version": 3,
+  "min_core_protocol_version": 3,
+  "id": "hue",
+  "label": "Philips Hue",
+  "version": "0.1.0_pre1",
+  "executable": "bin/couch-plugin-hue",
+  "capabilities": [],
+  "settings": [
+    {
+      "id": "host",
+      "label": "Bridge address",
+      "kind": "text",
+      "required": true
+    }
+  ],
+  "supports_inputs": false,
+  "children": [
+    {
+      "kind": "light",
+      "label": "Hue light",
+      "device_kind": "light",
+      "component": "light",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "On"
+        },
+        {
+          "id": "off",
+          "label": "Off"
+        },
+        {
+          "id": "toggle",
+          "label": "Toggle"
+        }
+      ],
+      "actions": [
+        {
+          "action": "set_light"
+        }
+      ]
+    },
+    {
+      "kind": "group",
+      "label": "Hue room",
+      "device_kind": "light",
+      "component": "light",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "On"
+        },
+        {
+          "id": "off",
+          "label": "Off"
+        },
+        {
+          "id": "toggle",
+          "label": "Toggle"
+        }
+      ],
+      "actions": [
+        {
+          "action": "set_light"
+        }
+      ]
+    },
+    {
+      "kind": "scene",
+      "label": "Hue scene",
+      "device_kind": "other",
+      "component": "scene",
+      "capabilities": [
+        {
+          "id": "on",
+          "label": "Recall"
+        }
+      ]
+    }
+  ],
+  "pairing": {
+    "required": true,
+    "max_seconds": 120
+  },
+  "keep_alive": true
+}
