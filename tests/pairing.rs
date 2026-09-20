@@ -239,7 +239,10 @@ fn a_bridge_that_will_not_link_ends_the_conversation_at_once() {
     let mut flow = HueFlow::new(&settings(&bridge)).expect("a flow");
     let (reason, message) = failure(&converse(&mut flow, 4));
     assert_eq!(reason, PairFailure::Refused);
-    assert_eq!(message, "The Hue bridge would not link with Couch");
+    assert_eq!(
+        message,
+        "The Hue bridge would not link with Couch (Hue error 7)"
+    );
     assert_eq!(
         bridge
             .requests()
@@ -392,4 +395,23 @@ fn pairing_through_the_package_then_configuring_it_lists_the_whole_bridge() {
         couch_hue::credential::HueCredential::parse(&second).is_ok(),
         "a re-pair produces a credential of the same shape"
     );
+}
+
+/// A real bridge refuses `"generateclientkey": false` as an invalid value
+/// (Hue error 7) before it looks at its link button, which is how the first
+/// hardware run of this package failed at once. The fake now does the same,
+/// so this only passes while the package leaves the field out, and a refusal
+/// says which Hue error it was.
+#[test]
+fn the_request_is_one_a_real_bridge_accepts_and_a_refusal_names_its_error() {
+    let bridge = FakeBridge::start();
+    let mut flow = HueFlow::new(&settings(&bridge)).expect("a flow");
+    let step = flow.step(None).unwrap();
+    assert!(
+        matches!(step, PairStep::Waiting { .. }),
+        "an unpressed bridge must mean keep waiting, not a refusal: {step:?}"
+    );
+    bridge.refuse();
+    let text = format!("{:?}", flow.step(None).unwrap());
+    assert!(text.contains("Hue error 7"), "{text}");
 }

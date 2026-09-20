@@ -682,7 +682,17 @@ fn route(shared: &Arc<Shared>, request: &Request, tls: &mut Tls) {
     match (request.method.as_str(), request.path.as_str()) {
         // Pairing: the one unauthenticated route a bridge has.
         ("POST", "/api") => {
-            if shared.refusing.load(Ordering::SeqCst) {
+            // A real bridge takes `generateclientkey` only as true: false is
+            // "invalid value" before it ever looks at the link button.
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).unwrap_or(serde_json::Value::Null);
+            if body.get("generateclientkey") == Some(&json!(false)) {
+                send(
+                    tls,
+                    200,
+                    &json!([{"error": {"type": 7, "address": "/generateclientkey", "description": "invalid value, false, for parameter, generateclientkey"}}]),
+                );
+            } else if shared.refusing.load(Ordering::SeqCst) {
                 send(
                     tls,
                     200,

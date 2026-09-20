@@ -1,6 +1,6 @@
 [package]
 name = "couch-hue"
-version = "0.1.0-pre2"
+version = "0.1.0-pre3"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Philips Hue bridge client and Couch integration package: lights, rooms and scenes over the local v2 API"
