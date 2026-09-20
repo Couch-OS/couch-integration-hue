@@ -45,7 +45,7 @@ key, a certificate or a path.
 A Hue bridge issues an application key to whoever asks for one while its round
 button is being pressed, and before that it answers error 101. So the whole
 conversation is one request repeated: `POST /api` with
-`{"devicetype":"couch#package-dev","generateclientkey":false}`, once per poll,
+`{"devicetype":"couch#package-dev"}`, once per poll,
 until it stops saying 101. Couch draws the dialog; the package only says what
 to wait for.
 
@@ -115,8 +115,8 @@ without, so the same version has two spellings:
 
 | where | spelling |
 | --- | --- |
-| `Cargo.toml` | `0.1.0-pre2` (semver) |
-| `plugin.json`, the APK, the feed | `0.1.0_pre2` |
+| `Cargo.toml` | `0.1.0-pre3` (semver) |
+| `plugin.json`, the APK, the feed | `0.1.0_pre3` |
 
 `tools/integrations/build-apk.sh` checks that `plugin.json`'s version equals
 the APK version exactly, so `plugin.json` carries the underscore spelling.

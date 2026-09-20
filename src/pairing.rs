@@ -7,7 +7,7 @@
 //! the whole flow is one request repeated until it stops saying 101:
 //!
 //! ```text
-//! step  -> POST /api {"devicetype":"couch#package-dev","generateclientkey":false}
+//! step  -> POST /api {"devicetype":"couch#package-dev"}
 //!       <- [{"error":{"type":101,...}}]        waiting: press the button
 //! step  -> ...same...
 //!       <- [{"success":{"username":"<key>"}}]  a key
@@ -94,6 +94,9 @@ enum Attempt {
     Changed,
     /// The bridge said no, or said something this package cannot read.
     Refused(&'static str),
+    /// The bridge answered with an error of its own that is not "press the
+    /// button": its number, which is safe to show and says what went wrong.
+    Bridge(u16),
 }
 
 /// One pairing conversation with one bridge.
@@ -161,8 +164,11 @@ impl HueFlow {
         let sent = agent
             .post(format!("{}/api", self.base))
             // No client key: this package has no entertainment streaming, and
-            // a key it does not use is a key it would have to keep.
-            .send_json(json!({"devicetype": DEVICE_TYPE, "generateclientkey": false}));
+            // a key it does not use is a key it would have to keep. The field
+            // is left out, not sent as false: a real bridge refuses
+            // `"generateclientkey": false` as an invalid value (error 7) and
+            // never gets as far as looking at its link button.
+            .send_json(json!({"devicetype": DEVICE_TYPE}));
         let response = match sent {
             Ok(response) => response,
             // The bridge is there and did not answer in time. The budget is
@@ -192,8 +198,11 @@ impl HueFlow {
             if row["error"]["type"] == 101 {
                 return Attempt::NotPressed;
             }
-            if row.get("error").is_some() {
-                return Attempt::Refused(REFUSED);
+            if let Some(error) = row.get("error") {
+                return match error["type"].as_u64().and_then(|n| u16::try_from(n).ok()) {
+                    Some(number) => Attempt::Bridge(number),
+                    None => Attempt::Refused(REFUSED),
+                };
             }
         }
         match rows
@@ -299,6 +308,8 @@ impl PairFlow for HueFlow {
             Attempt::Unreachable => PairStep::failed(PairFailure::Unreachable).because(UNREACHABLE),
             Attempt::Changed => PairStep::failed(PairFailure::Refused).because(CHANGED),
             Attempt::Refused(message) => PairStep::failed(PairFailure::Refused).because(message),
+            Attempt::Bridge(number) => PairStep::failed(PairFailure::Refused)
+                .because(format!("{REFUSED} (Hue error {number})")),
         })
     }
 
