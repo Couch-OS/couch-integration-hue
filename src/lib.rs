@@ -7,6 +7,7 @@ pub mod adapter;
 pub mod catalog;
 pub mod credential;
 mod light;
+pub mod pairing;
 pub mod resources;
 pub mod session;
 pub mod settings;

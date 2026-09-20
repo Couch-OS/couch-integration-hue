@@ -22,7 +22,7 @@ fn client(bridge: &FakeBridge) -> Hue {
     Hue::new(
         &bridge.address().to_string(),
         bridge.application_key(),
-        bridge.certificate(),
+        &bridge.certificate(),
     )
     .expect("a client for the fake bridge")
 }
@@ -68,7 +68,7 @@ fn a_wrong_key_is_refused_and_a_wrong_certificate_never_gets_that_far() {
     let wrong_key = Hue::new(
         &bridge.address().to_string(),
         "notTheApplicationKey",
-        bridge.certificate(),
+        &bridge.certificate(),
     )
     .expect("a client with the wrong key");
     assert_eq!(wrong_key.lights().unwrap_err(), Error::Authentication);
@@ -83,7 +83,7 @@ fn a_wrong_key_is_refused_and_a_wrong_certificate_never_gets_that_far() {
     let wrong_certificate = Hue::new(
         &bridge.address().to_string(),
         bridge.application_key(),
-        stranger.certificate(),
+        &stranger.certificate(),
     )
     .expect("a client with the wrong certificate");
     bridge.clear_log();
@@ -201,7 +201,7 @@ struct PinnedStream {
 
 fn open_stream(bridge: &FakeBridge) -> PinnedStream {
     let pin = Arc::new(couch_sdk::tls::Pin::new(
-        Arc::new(Mutex::new(bridge.certificate().to_vec())),
+        Arc::new(Mutex::new(bridge.certificate())),
         "Hue bridge certificate changed; pair again",
     ));
     let config = couch_sdk::tls::pinned_client_config(pin).expect("a pinned client");

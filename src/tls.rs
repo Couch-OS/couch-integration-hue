@@ -2,11 +2,72 @@
 //! then pin the exact certificate (`couch_sdk::tls::Pin`, shared with the TV
 //! clients). What is local to Hue is the ureq transport underneath it.
 use couch_sdk::tls::Pin;
-use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, StreamOwned};
+use rustls::{
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    pki_types::{CertificateDer, ServerName, UnixTime},
+    ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme, StreamOwned,
+};
 use std::{
     io::{Read, Write},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
+
+/// What a person is shown when a bridge presents a certificate that is not
+/// the one Couch pinned while they were standing at it.
+pub const CHANGED: &str = "Hue bridge certificate changed; pair again";
+
+/// The pinned verifier, and a flag saying it refused one.
+///
+/// rustls reports a refused certificate as an alert, which ureq hands back as
+/// an ordinary I/O error - indistinguishable from a cable being pulled. A
+/// pairing conversation has to tell those two apart, because one of them is a
+/// bridge being slow and the other is something standing in front of it.
+#[derive(Debug)]
+struct Noted {
+    pin: Pin,
+    refused: Arc<AtomicBool>,
+}
+
+impl ServerCertVerifier for Noted {
+    fn verify_server_cert(
+        &self,
+        end: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let answer = self
+            .pin
+            .verify_server_cert(end, intermediates, name, ocsp, now);
+        if answer.is_err() {
+            self.refused.store(true, Ordering::SeqCst);
+        }
+        answer
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signed: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        couch_sdk::tls::verify_tls12_signature(message, cert, signed)
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signed: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        couch_sdk::tls::verify_tls13_signature(message, cert, signed)
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        couch_sdk::tls::supported_verify_schemes()
+    }
+}
 use ureq::unversioned::{
     resolver::DefaultResolver,
     transport::{
@@ -85,6 +146,23 @@ pub fn agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
 pub fn write_agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
     make_agent(certificate, false, 2, 3, Some(4))
 }
+/// Pairing, which is one request per poll of a dialog somebody is watching:
+/// four seconds in total, the budget one step of a conversation may take. It
+/// is deliberately longer in the answer than a write: a bridge issuing a key
+/// is doing more work than a bridge switching a lamp, and a step that gives up
+/// early costs the person a whole poll interval.
+pub fn pair_agent(certificate: Arc<Mutex<Vec<u8>>>, refused: Arc<AtomicBool>) -> ureq::Agent {
+    built(
+        Arc::new(Noted {
+            pin: Pin::new(certificate, CHANGED),
+            refused,
+        }),
+        false,
+        2,
+        4,
+        Some(4),
+    )
+}
 /// The event stream, which has no deadline of its own: each idle read is
 /// bounded instead (see `await_input`).
 pub fn stream_agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
@@ -97,11 +175,23 @@ fn make_agent(
     response: u64,
     global: Option<u64>,
 ) -> ureq::Agent {
-    let tls = couch_sdk::tls::pinned_client_config(Arc::new(Pin::new(
-        certificate,
-        "Hue bridge certificate changed; pair again",
-    )))
-    .expect("TLS versions");
+    built(
+        Arc::new(Pin::new(certificate, CHANGED)),
+        stream,
+        connect,
+        response,
+        global,
+    )
+}
+
+fn built(
+    verifier: Arc<dyn ServerCertVerifier>,
+    stream: bool,
+    connect: u64,
+    response: u64,
+    global: Option<u64>,
+) -> ureq::Agent {
+    let tls = couch_sdk::tls::pinned_client_config(verifier).expect("TLS versions");
     let cfg = ureq::Agent::config_builder()
         .timeout_global(global.map(std::time::Duration::from_secs))
         .timeout_connect(Some(std::time::Duration::from_secs(connect)))

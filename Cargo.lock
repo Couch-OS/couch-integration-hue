@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "couch-hue"
-version = "0.1.0-pre1"
+version = "0.1.0-pre2"
 dependencies = [
  "couch-plugin",
  "couch-sdk",
@@ -95,7 +95,7 @@ dependencies = [
 [[package]]
 name = "couch-model"
 version = "0.1.0"
-source = "git+https://github.com/Couch-OS/couch.git?rev=d907828d3b869d19c5f25e7dfd50645732c29eed#d907828d3b869d19c5f25e7dfd50645732c29eed"
+source = "git+https://github.com/Couch-OS/couch.git?rev=f279ad0b00eb38b54510379da8addc9f4f35e0da#f279ad0b00eb38b54510379da8addc9f4f35e0da"
 dependencies = [
  "serde",
  "serde_json",
@@ -104,7 +104,7 @@ dependencies = [
 [[package]]
 name = "couch-plugin"
 version = "0.1.0"
-source = "git+https://github.com/Couch-OS/couch.git?rev=d907828d3b869d19c5f25e7dfd50645732c29eed#d907828d3b869d19c5f25e7dfd50645732c29eed"
+source = "git+https://github.com/Couch-OS/couch.git?rev=f279ad0b00eb38b54510379da8addc9f4f35e0da#f279ad0b00eb38b54510379da8addc9f4f35e0da"
 dependencies = [
  "couch-sdk",
  "libc",
@@ -115,7 +115,7 @@ dependencies = [
 [[package]]
 name = "couch-sdk"
 version = "0.1.0"
-source = "git+https://github.com/Couch-OS/couch.git?rev=d907828d3b869d19c5f25e7dfd50645732c29eed#d907828d3b869d19c5f25e7dfd50645732c29eed"
+source = "git+https://github.com/Couch-OS/couch.git?rev=f279ad0b00eb38b54510379da8addc9f4f35e0da#f279ad0b00eb38b54510379da8addc9f4f35e0da"
 dependencies = [
  "couch-model",
  "rustls",

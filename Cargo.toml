@@ -1,6 +1,6 @@
 [package]
 name = "couch-hue"
-version = "0.1.0-pre1"
+version = "0.1.0-pre2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Philips Hue bridge client and Couch integration package: lights, rooms and scenes over the local v2 API"
@@ -12,8 +12,8 @@ repository = "https://github.com/Couch-OS/couch-integration-hue"
 # from silently changing what it shares with the host. The package speaks
 # protocol 3, which is unreleased: `protocol-3-preview` is the switch that
 # makes `couch_plugin::serve` accept a manifest that says so.
-couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "d907828d3b869d19c5f25e7dfd50645732c29eed", features = ["protocol-3-preview"] }
-couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "d907828d3b869d19c5f25e7dfd50645732c29eed", features = ["tls"] }
+couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "f279ad0b00eb38b54510379da8addc9f4f35e0da", features = ["protocol-3-preview"] }
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "f279ad0b00eb38b54510379da8addc9f4f35e0da", features = ["tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "=3.4.1", default-features = false, features = ["rustls", "json"] }
@@ -21,8 +21,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 url = "2"
 
 [dev-dependencies]
-couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "d907828d3b869d19c5f25e7dfd50645732c29eed", features = ["protocol-3-preview", "testing"] }
-couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "d907828d3b869d19c5f25e7dfd50645732c29eed", features = ["tls", "testing"] }
+couch-plugin = { git = "https://github.com/Couch-OS/couch.git", rev = "f279ad0b00eb38b54510379da8addc9f4f35e0da", features = ["protocol-3-preview", "testing"] }
+couch-sdk = { git = "https://github.com/Couch-OS/couch.git", rev = "f279ad0b00eb38b54510379da8addc9f4f35e0da", features = ["tls", "testing"] }
 tiny_http = "0.12"
 # The fake CLIP v2 bridge is a real TLS server with its own self-signed
 # certificate, because the package only ever trusts a certificate that reached

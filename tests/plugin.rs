@@ -20,8 +20,8 @@ const CARGO: &str = include_str!("../Cargo.toml");
 /// The version has two spellings, on purpose: Cargo needs semver's hyphen and
 /// `abuild` refuses one, so the package, the APK and the feed all say
 /// `0.1.0_pre1` and only `Cargo.toml` says `0.1.0-pre1`.
-const APK_VERSION: &str = "0.1.0_pre1";
-const CARGO_VERSION: &str = "0.1.0-pre1";
+const APK_VERSION: &str = "0.1.0_pre2";
+const CARGO_VERSION: &str = "0.1.0-pre2";
 
 #[test]
 fn the_two_manifests_say_the_same_package_and_the_feed_could_read_them() {
@@ -160,20 +160,51 @@ fn the_package_puts_nothing_on_stdout_but_protocol_frames() {
 
     let settings = json!({"host": bridge.address().to_string()});
     let credential = bridge.credential();
-    let conversation = [
-        json!({"method": "hello", "protocol_version": 3}),
-        serde_json::to_value(Request::configure_with(settings, Some(&credential))).unwrap(),
-        serde_json::to_value(Request::children(None)).unwrap(),
-        serde_json::to_value(Request::status().at(bridge.light_child(0))).unwrap(),
-        serde_json::to_value(Request::command("on").at(bridge.light_child(0))).unwrap(),
-    ];
-    for (index, body) in conversation.iter().enumerate() {
-        write_frame(&mut input, &json!({"id": index + 1, "body": body}));
-    }
     let mut answers = Vec::new();
-    for _ in 0..conversation.len() {
+    let mut exchange = |body: Value, answers: &mut Vec<Value>| {
+        write_frame(&mut input, &json!({"id": answers.len() + 1, "body": body}));
         answers.push(read_frame(&mut output));
-    }
+    };
+    exchange(
+        json!({"method": "hello", "protocol_version": 3}),
+        &mut answers,
+    );
+    exchange(
+        serde_json::to_value(Request::configure_with(settings.clone(), Some(&credential))).unwrap(),
+        &mut answers,
+    );
+    // A pairing conversation, which is where a package is most likely to say
+    // something out loud: nobody has pressed this bridge's button, so it
+    // stays open long enough to be polled and then closed.
+    exchange(
+        serde_json::to_value(Request::pair_start(settings, None)).unwrap(),
+        &mut answers,
+    );
+    let session = answers[2]["body"]["session"]
+        .as_str()
+        .expect("a pairing session")
+        .to_string();
+    exchange(
+        serde_json::to_value(Request::pair_continue(&session, None)).unwrap(),
+        &mut answers,
+    );
+    exchange(
+        serde_json::to_value(Request::pair_cancel(&session)).unwrap(),
+        &mut answers,
+    );
+    exchange(
+        serde_json::to_value(Request::children(None)).unwrap(),
+        &mut answers,
+    );
+    exchange(
+        serde_json::to_value(Request::status().at(bridge.light_child(0))).unwrap(),
+        &mut answers,
+    );
+    exchange(
+        serde_json::to_value(Request::command("on").at(bridge.light_child(0))).unwrap(),
+        &mut answers,
+    );
+    drop(exchange);
     drop(input);
 
     let mut leftover = Vec::new();
@@ -203,11 +234,15 @@ fn the_package_puts_nothing_on_stdout_but_protocol_frames() {
     assert_eq!(answers[0]["body"]["type"], "hello");
     assert_eq!(answers[0]["body"]["manifest"]["id"], "hue");
     assert_eq!(answers[1]["body"]["type"], "ok");
+    assert_eq!(answers[2]["body"]["type"], "pairing");
+    assert_eq!(answers[2]["body"]["step"]["step"], "waiting");
+    assert_eq!(answers[3]["body"]["type"], "pairing");
+    assert_eq!(answers[4]["body"]["type"], "ok", "a cancel is answered");
     // Whatever the answers to the last three are, nothing anywhere in them may
     // repeat the key or the certificate.
     let transcript = serde_json::to_string(&answers).expect("the transcript");
     assert!(!transcript.contains(bridge.application_key()));
-    assert!(!transcript.contains(&couch_hue::credential::encode(bridge.certificate())));
+    assert!(!transcript.contains(&couch_hue::credential::encode(&bridge.certificate())));
 }
 
 #[test]

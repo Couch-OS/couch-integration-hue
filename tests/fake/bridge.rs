@@ -273,6 +273,10 @@ struct Shared {
     log: Mutex<Vec<String>>,
     resources: Mutex<Vec<Value>>,
     listeners: Mutex<Vec<Sender<String>>>,
+    /// What it presents, and the configuration that presents it. Both change
+    /// together when a bridge is replaced under a conversation.
+    certificate: Mutex<Vec<u8>>,
+    tls: Mutex<Arc<ServerConfig>>,
 }
 
 impl Shared {
@@ -313,7 +317,6 @@ impl Shared {
 /// A fake Hue bridge, listening until it is dropped.
 pub struct FakeBridge {
     address: SocketAddr,
-    certificate: Vec<u8>,
     shared: Arc<Shared>,
 }
 
@@ -328,17 +331,7 @@ impl FakeBridge {
     }
 
     pub fn with_id(id: &str) -> Self {
-        let (certificate, private) = self_signed(id);
-        let config =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .expect("TLS versions")
-                .with_no_client_auth()
-                .with_single_cert(
-                    vec![CertificateDer::from(certificate.clone())],
-                    PrivatePkcs8KeyDer::from(private).into(),
-                )
-                .expect("a self-signed certificate and its key");
+        let (certificate, config) = presented(id);
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let address = listener.local_addr().expect("the chosen port");
         listener
@@ -355,18 +348,15 @@ impl FakeBridge {
             log: Mutex::new(Vec::new()),
             resources: Mutex::new(household()),
             listeners: Mutex::new(Vec::new()),
+            certificate: Mutex::new(certificate),
+            tls: Mutex::new(config),
         });
         let accepting = shared.clone();
-        let config = Arc::new(config);
         thread::Builder::new()
             .name("fake-hue-bridge".into())
-            .spawn(move || accept(listener, accepting, config))
+            .spawn(move || accept(listener, accepting))
             .expect("the bridge's accept thread");
-        Self {
-            address,
-            certificate,
-            shared,
-        }
+        Self { address, shared }
     }
 
     pub fn address(&self) -> SocketAddr {
@@ -386,18 +376,23 @@ impl FakeBridge {
         &self.shared.key
     }
     /// The exact certificate this bridge presents, in DER.
-    pub fn certificate(&self) -> &[u8] {
-        &self.certificate
+    pub fn certificate(&self) -> Vec<u8> {
+        self.shared.certificate.lock().expect("certificate").clone()
+    }
+
+    /// Present a different certificate from now on, keeping the same id: a
+    /// bridge that was replaced, or something standing in front of it.
+    /// Connections already open keep the one they started with.
+    pub fn rotate_certificate(&self) {
+        let (certificate, config) = presented(&self.shared.id);
+        *self.shared.certificate.lock().expect("certificate") = certificate;
+        *self.shared.tls.lock().expect("tls") = config;
     }
 
     /// What Couch would be holding after a successful pairing with this
     /// bridge. The certificate reaches the package only through this.
     pub fn hue_credential(&self) -> HueCredential {
-        HueCredential::new(
-            self.application_key(),
-            self.bridge_id(),
-            self.certificate.clone(),
-        )
+        HueCredential::new(self.application_key(), self.bridge_id(), self.certificate())
     }
     pub fn credential(&self) -> Credential {
         self.hue_credential().to_credential()
@@ -513,6 +508,22 @@ impl FakeDevice for FakeBridge {
     }
 }
 
+/// One self-signed certificate and the rustls configuration that serves it.
+fn presented(id: &str) -> (Vec<u8>, Arc<ServerConfig>) {
+    let (certificate, private) = self_signed(id);
+    let config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(certificate.clone())],
+                PrivatePkcs8KeyDer::from(private).into(),
+            )
+            .expect("a self-signed certificate and its key");
+    (certificate, Arc::new(config))
+}
+
 fn self_signed(id: &str) -> (Vec<u8>, Vec<u8>) {
     // The common name is the bridge id, as a real bridge's certificate has it:
     // the certificate never names the address it is reached at, which is why
@@ -528,15 +539,17 @@ fn self_signed(id: &str) -> (Vec<u8>, Vec<u8>) {
     (certificate.der().to_vec(), key.serialize_der())
 }
 
-fn accept(listener: TcpListener, shared: Arc<Shared>, config: Arc<ServerConfig>) {
+fn accept(listener: TcpListener, shared: Arc<Shared>) {
     loop {
         if !shared.running.load(Ordering::SeqCst) || shared.mode() == Mode::Close {
             return; // dropping the listener refuses every later connection
         }
         match listener.accept() {
             Ok((stream, _)) => {
+                // Read at accept time, so a rotation applies to the next
+                // connection and not to one already open.
+                let config = shared.tls.lock().expect("tls").clone();
                 let shared = shared.clone();
-                let config = config.clone();
                 let _ = thread::Builder::new()
                     .name("fake-hue-connection".into())
                     .spawn(move || connection(stream, shared, config));

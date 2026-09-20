@@ -36,6 +36,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     catalog::{Control, Kind},
     credential::HueCredential,
+    pairing::HueFlow,
     session::{Reading, Session},
     Error,
 };
@@ -243,6 +244,22 @@ impl DeviceClient for HueBridge {
             session,
             listing: None,
         })
+    }
+
+    /// Begin a pairing conversation with the bridge these settings address.
+    ///
+    /// It needs no prior configure and no key: a Hue connection becomes
+    /// usable by being paired. `existing` is ignored, because a Hue bridge
+    /// issues a new application key every time the button is pressed and has
+    /// no notion of one key standing for another - so re-pairing starts
+    /// clean, and the old key stays valid on the bridge until its owner
+    /// deletes it there.
+    fn pair_start(
+        settings: &HueSettings,
+        _existing: Option<&Credential>,
+    ) -> SdkResult<Box<dyn couch_sdk::PairFlow>> {
+        settings.validate()?;
+        Ok(Box::new(HueFlow::new(settings).map_err(refused)?))
     }
 
     /// The connection has no commands of its own.

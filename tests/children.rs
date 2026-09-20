@@ -546,7 +546,7 @@ fn the_key_and_the_certificate_reach_the_package_only_through_the_credential() {
     let wrong = couch_hue::credential::HueCredential::new(
         bridge.application_key(),
         bridge.bridge_id(),
-        stranger.certificate().to_vec(),
+        stranger.certificate(),
     );
     let refused = slot.endpoint(
         bridge.settings_value(),
