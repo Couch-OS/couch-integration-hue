@@ -61,6 +61,12 @@ pub const PAIR_BUDGET: Duration = Duration::from_secs(115);
 /// notice the button was pressed and slow enough not to hammer a bridge that
 /// is doing something else.
 const POLL_MS: u32 = 2000;
+/// How many requests in a row may go unanswered, before this conversation has
+/// met a bridge at all, until it stops telling the person to press a button.
+/// An address nothing lives at does not refuse a connection; it says nothing,
+/// which looks exactly like a slow bridge. A bridge that has shown its
+/// certificate once is a bridge, and is given the whole budget.
+const SILENT_ATTEMPTS: u32 = 2;
 /// What the bridge lists this remote as in its own app. `couch#package-dev`
 /// says both what it is and that it is the packaged preview, so the owner can
 /// find and delete it.
@@ -116,6 +122,8 @@ pub struct HueFlow {
     agent: Option<ureq::Agent>,
     started: Instant,
     budget: Duration,
+    /// Requests in a row that nothing answered. See [`SILENT_ATTEMPTS`].
+    silent: u32,
 }
 
 impl std::fmt::Debug for HueFlow {
@@ -147,6 +155,7 @@ impl HueFlow {
             refused,
             started: Instant::now(),
             budget,
+            silent: 0,
         })
     }
 
@@ -154,6 +163,20 @@ impl HueFlow {
     /// happened. Empty before that.
     pub fn certificate(&self) -> Vec<u8> {
         self.pin.lock().map(|pin| pin.clone()).unwrap_or_default()
+    }
+
+    /// What a request nobody answered means. Before any handshake it is
+    /// counted, because nothing has shown there is a bridge to wait for.
+    fn unanswered(&mut self) -> Attempt {
+        if !self.certificate().is_empty() {
+            return Attempt::Slow;
+        }
+        self.silent += 1;
+        if self.silent >= SILENT_ATTEMPTS {
+            Attempt::Unreachable
+        } else {
+            Attempt::Slow
+        }
     }
 
     /// One `POST /api`.
@@ -286,7 +309,14 @@ impl PairFlow for HueFlow {
         if self.started.elapsed() > self.budget {
             return Ok(PairStep::failed(PairFailure::TimedOut).because(NOT_IN_TIME));
         }
-        Ok(match self.attempt() {
+        let attempt = match self.attempt() {
+            Attempt::Slow => self.unanswered(),
+            other => {
+                self.silent = 0;
+                other
+            }
+        };
+        Ok(match attempt {
             Attempt::Key(key) => match self.finish(&key) {
                 Ok(step) => step,
                 // The key arrived and something after it did not. Nothing is
@@ -397,6 +427,24 @@ mod tests {
         // Nothing has been spoken to, so nothing has been pinned.
         assert!(flow.certificate().is_empty());
         assert_eq!(format!("{flow:?}"), "HueFlow { .. }");
+    }
+
+    #[test]
+    fn an_address_nothing_answers_at_is_not_told_to_press_a_button_for_two_minutes() {
+        let settings = HueSettings {
+            host: "192.0.2.1".into(),
+        };
+        let mut flow = HueFlow::new(&settings).unwrap();
+        // Nothing has ever answered: the first silence could be a slow
+        // bridge, the second is an empty address.
+        assert!(matches!(flow.unanswered(), Attempt::Slow));
+        assert!(matches!(flow.unanswered(), Attempt::Unreachable));
+        // A bridge that has shown its certificate is a bridge, however slow.
+        let mut met = HueFlow::new(&settings).unwrap();
+        met.pin.lock().unwrap().extend_from_slice(b"certificate");
+        for _ in 0..10 {
+            assert!(matches!(met.unanswered(), Attempt::Slow));
+        }
     }
 
     #[test]

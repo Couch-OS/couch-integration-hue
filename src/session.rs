@@ -383,10 +383,19 @@ impl Session {
         if let Some(failure) = self.take_failure(&control.id) {
             return Err(failure);
         }
-        if control.kind == Kind::Group && !self.claim(&control.id) {
-            self.defer(control, body, target);
-            self.hold(control, target)?;
-            return Ok(target);
+        if control.kind == Kind::Group {
+            if !self.claim(&control.id) {
+                self.defer(control, body, target);
+                self.hold(control, target)?;
+                return Ok(target);
+            }
+            // The window is open and this write goes now. Anything still
+            // waiting for it is older than this one, and the writer thread
+            // would send it a second later, leaving the room at a level the
+            // person had already moved on from.
+            if let Ok(mut queued) = self.queued.lock() {
+                queued.remove(&control.id);
+            }
         }
         self.send(control, body, target)
     }
@@ -414,7 +423,17 @@ impl Session {
             return Err(error);
         }
         drop(cache);
-        self.hold(control, target)?;
+        // A newer write for this room may have been held while this one was
+        // on the wire. It is what the person last asked for, so it stays what
+        // a read shows: a slider must not step back to the older level.
+        let superseded = self
+            .queued
+            .lock()
+            .map(|queued| queued.contains_key(&control.id))
+            .unwrap_or(false);
+        if !superseded {
+            self.hold(control, target)?;
+        }
         Ok(target)
     }
 
@@ -818,6 +837,99 @@ mod tests {
         let queued = session.queued.lock().unwrap();
         assert_eq!(queued.len(), 1, "one write waiting per room, not three");
         assert_eq!(queued["room/a"].target.brightness, Some(40));
+    }
+
+    const ROOM_RID: &str = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a";
+
+    /// A bridge that takes `count` room writes and says yes to each.
+    fn accepting(count: usize) -> (std::net::SocketAddr, thread::JoinHandle<Vec<String>>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let remote = thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for _ in 0..count {
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                bodies.push(body);
+                request
+                    .respond(tiny_http::Response::from_string(
+                        json!({"errors": [], "data": [{"rid": ROOM_RID, "rtype": "grouped_light"}]})
+                            .to_string(),
+                    ))
+                    .unwrap();
+            }
+            bodies
+        });
+        (address, remote)
+    }
+
+    fn room(brightness: u8) -> (Control, LightState) {
+        let mut room = lamp(Some(true), Some(10));
+        room.id = format!("room/{ROOM_RID}");
+        room.kind = Kind::Group;
+        let target = LightState {
+            brightness: Some(brightness),
+            ..room.state
+        };
+        (room, target)
+    }
+
+    #[test]
+    fn a_room_write_that_goes_now_drops_the_older_one_still_waiting() {
+        let (address, remote) = accepting(1);
+        let session = session(address);
+        // Held a moment ago, while the window was shut. The window has opened
+        // since and the writer thread has not looked yet.
+        let (older, held) = room(45);
+        session.defer(&older, json!({"dimming": {"brightness": 45}}), held);
+        let (newer, target) = room(40);
+        let answered = session
+            .write(&newer, json!({"dimming": {"brightness": 40}}), target)
+            .unwrap();
+        assert_eq!(answered.brightness, Some(40));
+        assert!(
+            session.queued.lock().unwrap().is_empty(),
+            "or the room ends a second later at 45, which nobody asked for last"
+        );
+        let sent: Vec<Value> = remote
+            .join()
+            .unwrap()
+            .iter()
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(sent, [json!({"dimming": {"brightness": 40}})]);
+    }
+
+    #[test]
+    fn a_room_write_sent_late_does_not_step_a_read_back_from_the_newer_one() {
+        let (address, remote) = accepting(1);
+        let session = session(address);
+        let (control, _) = room(10);
+        session
+            .cache()
+            .unwrap()
+            .apply(vec![control.clone()], Instant::now());
+        // 40 was asked for while 45 was still on its way to the bridge.
+        let (newer, newest) = room(40);
+        session.defer(&newer, json!({"dimming": {"brightness": 40}}), newest);
+        session.hold(&newer, newest).unwrap();
+        let (older, late) = room(45);
+        session
+            .send(&older, json!({"dimming": {"brightness": 45}}), late)
+            .unwrap();
+        remote.join().unwrap();
+        let Reading::Known(shown) = session.read(&format!("room/{ROOM_RID}")).unwrap() else {
+            panic!("the room is in the snapshot");
+        };
+        assert_eq!(
+            shown.state.brightness,
+            Some(40),
+            "the slider never goes backwards"
+        );
     }
 
     #[test]
