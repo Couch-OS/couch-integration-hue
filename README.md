@@ -40,6 +40,46 @@ to the package on each start. Nothing else can read them, they are never in
 the environment or in argv, and no error text this package writes contains a
 key, a certificate or a path.
 
+### Pairing
+
+A Hue bridge issues an application key to whoever asks for one while its round
+button is being pressed, and before that it answers error 101. So the whole
+conversation is one request repeated: `POST /api` with
+`{"devicetype":"couch#package-dev","generateclientkey":false}`, once per poll,
+until it stops saying 101. Couch draws the dialog; the package only says what
+to wait for.
+
+Three things make it more than a loop.
+
+- **The certificate is trusted exactly once, and only then.** A bridge's
+  certificate names the bridge id rather than its address and is issued by
+  Signify's private CA or self-signed, so nothing public can verify it. The
+  only honest moment to decide to trust one is while a person is standing at
+  the bridge pressing its button - so the first handshake of a pairing fills
+  an empty pin cell, every later request in that conversation must present
+  exactly that certificate, and it is stored in the credential beside the key.
+  A bridge that presents a different one half way through ends the
+  conversation, and says so.
+- **The clock belongs to the package.** The manifest gives the dialog 120
+  seconds; the flow gives up at 115, so the person is told "not linked in
+  time" rather than watching a dialog vanish. A request that times out does
+  **not** end it: a bridge under load is still a bridge, and only one that
+  cannot be reached at all ends the conversation early.
+- **The key is proved before it is handed over.** After the bridge issues one,
+  the flow reads `/api/0/config` for the bridge id and then makes one
+  authenticated read through the pinned client. A pairing that hands Couch a
+  key it has never used is a pairing that fails later, in front of somebody
+  who has already walked away.
+
+Re-pairing starts clean. Hue issues a new key every time the button is
+pressed and has no notion of one key standing for another, so the key Couch
+already holds is ignored; the old one stays valid on the bridge until its
+owner deletes it in the Hue app, where it is listed as `couch#package-dev`.
+
+Every line a conversation can produce is written out in `src/pairing.rs`, and
+the only thing in any of them that comes from the bridge is the last six
+characters of its id.
+
 ### Limits of this preview
 
 - **No colour.** `xy` is refused. Colour temperature (mirek) is supported on a
@@ -52,14 +92,21 @@ key, a certificate or a path.
   package is a later step; until then the panel re-reads on its own round.
 - **A vanished or unreachable child stays listed as unavailable** rather than
   disappearing: its state is unknown, never an inferred "off".
-- **A room takes one command a second.** That is the bridge's limit for a
-  grouped light, and it drops the rest silently, which leaves a room at a
-  level nobody asked for. A second command inside that second is refused here
-  instead, with a sentence saying so. It is reported as `rejected`: a package
-  cannot say `busy` on the wire, because `couch_sdk::Error` has no such
-  variant and nothing maps to it. Making a dragged room slider re-queue
-  instead of showing a refusal needs either that variant or pacing in the
-  host, and is worth doing before a real user sees this.
+- **A room takes one command a second**, which is the bridge's limit for a
+  grouped light; sent more, it drops them silently and leaves the room at a
+  level nobody asked for. So a room's writes are **coalesced** rather than
+  refused: every one is answered at once with the state it asks for, at most
+  one command a second reaches the bridge, and the newest target replaces one
+  still waiting. A held brightness key therefore produces two bridge commands
+  a second and no refusals, instead of an error on every other step. Nothing
+  is lost in the other direction either: a write this package answered and
+  then could not send drops its optimistic state and is reported, once, to
+  whoever asks next. A `busy` variant in `couch_sdk::Error` would still be the
+  cleaner long-term answer for a host that wants to re-queue rather than be
+  told "done" early, but no core change is needed for this to behave.
+- **Single lamps are not coalesced.** Hue's guidance is about ten commands a
+  second for a light against one for a group, and a held key on the remote is
+  nowhere near ten a second, so a lamp's writes go straight out.
 
 ### Versions
 
@@ -68,8 +115,8 @@ without, so the same version has two spellings:
 
 | where | spelling |
 | --- | --- |
-| `Cargo.toml` | `0.1.0-pre1` (semver) |
-| `plugin.json`, the APK, the feed | `0.1.0_pre1` |
+| `Cargo.toml` | `0.1.0-pre2` (semver) |
+| `plugin.json`, the APK, the feed | `0.1.0_pre2` |
 
 `tools/integrations/build-apk.sh` checks that `plugin.json`'s version equals
 the APK version exactly, so `plugin.json` carries the underscore spelling.

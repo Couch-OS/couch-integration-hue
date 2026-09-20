@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use couch_plugin::{Endpoint, HostPolicy, Manifest};
+use couch_plugin::{Endpoint, Host, HostPolicy, Manifest};
 use couch_sdk::Credential;
 use serde_json::Value;
 
@@ -84,6 +84,13 @@ impl Slot {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// One child of this package, spoken to directly. Pairing needs this
+    /// rather than an endpoint: a conversation is a sequence of requests to
+    /// one child, and the host holds the session.
+    pub fn host(&self, timeout: Duration) -> Host {
+        Host::spawn(&self.root, &self.manifest, timeout).expect("a package handshake")
     }
 
     /// The endpoint the daemon would start, with the key Couch holds for this

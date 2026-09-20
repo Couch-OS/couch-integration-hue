@@ -36,6 +36,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     catalog::{Control, Kind},
     credential::HueCredential,
+    pairing::HueFlow,
     session::{Reading, Session},
     Error,
 };
@@ -119,7 +120,6 @@ const VANISHED: &str = "This is no longer on the Hue bridge";
 const NOT_DIMMABLE: &str = "This Hue light cannot be dimmed";
 const NO_TEMPERATURE: &str = "This Hue light has no colour temperature";
 const NO_COLOUR: &str = "Couch cannot set a Hue light's colour yet";
-const PACED: &str = "The Hue bridge takes one room command a second; try again";
 const REFUSED: &str = "The Hue bridge refused that";
 
 fn message(text: &str) -> Reason {
@@ -140,7 +140,6 @@ fn refused(error: Error) -> SdkError {
         Error::Response => SdkError::Protocol,
         Error::Unavailable => SdkError::Rejected.because(message(VANISHED)),
         Error::Brightness => SdkError::Invalid.because(message(NOT_DIMMABLE)),
-        Error::Paced => SdkError::Rejected.because(message(PACED)),
         Error::Rejected => SdkError::Rejected.because(message(REFUSED)),
     }
 }
@@ -243,6 +242,22 @@ impl DeviceClient for HueBridge {
             session,
             listing: None,
         })
+    }
+
+    /// Begin a pairing conversation with the bridge these settings address.
+    ///
+    /// It needs no prior configure and no key: a Hue connection becomes
+    /// usable by being paired. `existing` is ignored, because a Hue bridge
+    /// issues a new application key every time the button is pressed and has
+    /// no notion of one key standing for another - so re-pairing starts
+    /// clean, and the old key stays valid on the bridge until its owner
+    /// deletes it there.
+    fn pair_start(
+        settings: &HueSettings,
+        _existing: Option<&Credential>,
+    ) -> SdkResult<Box<dyn couch_sdk::PairFlow>> {
+        settings.validate()?;
+        Ok(Box::new(HueFlow::new(settings).map_err(refused)?))
     }
 
     /// The connection has no commands of its own.
@@ -450,7 +465,6 @@ mod tests {
             Error::Response,
             Error::Unavailable,
             Error::Brightness,
-            Error::Paced,
             Error::Rejected,
         ] {
             let refusal = refused(error.clone());
