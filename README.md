@@ -113,6 +113,24 @@ cargo build --locked --release --bin couch-plugin-hue
 cargo fmt -- --check
 ```
 
+### Nothing here talks to a real bridge
+
+**Every test in this repository connects to one fake bridge on 127.0.0.1, and
+to nothing else.** It is in `tests/fake/bridge.rs`: a rustls server with its
+own self-signed certificate whose common name is its bridge id, serving CLIP
+v2 over a generated household of 48 lights, 14 rooms, 2 zones and 181 scenes,
+with the devices, zigbee links and grouped lights behind them. Writes change
+it and the next read agrees; a wrong key is a 401; an event stream reports the
+change afterwards; `silent()` answers nothing while staying connected and
+`close()` stops being a bridge at all; and it logs every request that reached
+it, which is how a test proves a status read touched no network.
+
+No test discovers anything, browses mDNS, or sends a byte to any address but
+the loopback port that fake chose. The package trusts the fake only because
+its certificate arrived inside a credential the test built: there is no
+test-only trust bypass anywhere in this repository, in test code or shipping
+code.
+
 TLS is `rustls` with the `ring` provider, which compiles C and assembly, so
 the ARM build needs an ARM musl C compiler. Couch supplies one (a pinned Zig
 behind `tools/arm-cc-env.sh`), and the integration feed sources that same file
