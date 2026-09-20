@@ -1,72 +1,117 @@
 # Couch Philips Hue integration
 
-This repository holds the Philips Hue client for Couch: direct local control of
-a Hue bridge over its v2 API (CLIP), with no Home Assistant and no Hue cloud
-account. It covers link-button pairing, lights, grouped rooms, scenes, and
-state kept current from the bridge's event stream.
+This repository holds the Philips Hue client for Couch and the installable
+**package** built from it: direct local control of a Hue bridge over its v2 API
+(CLIP), with no Home Assistant and no Hue cloud account. It covers link-button
+pairing, lights, grouped rooms, scenes, and state kept current from the
+bridge's event stream.
 
-**It is not an installable package yet, and deliberately so.** There is no
-`plugin.json`, no `integration.json` and no `tests/admission.rs` here, so the
-Couch integration feed cannot pin this repository. Couch's package protocol
-(version 2) has no pairing a package can drive, no way for the host to store
-the credential a pairing produces, no way for one connection to expose many
-devices, and no light control. A Hue package built on it would be one
-connection per lamp, a hand-typed application key, no certificate pin and
-on/off only. The package adapter waits for these named protocol additions,
-specified in [docs/protocol-needs.md](docs/protocol-needs.md):
+## What this is, and what it is not
 
-1. pairing steps with credential write-back (shared with LG webOS, Samsung
-   Tizen, Android TV and Apple TV);
-2. child devices: one connection, many lights, rooms and scenes;
-3. a `light` component: on/off, brightness, later colour temperature and colour;
-4. versioned state polling answered from the package's event-stream cache;
-5. host-run mDNS discovery (an improvement, not a blocker).
+**It is a development preview, and only that.** The package declares protocol
+version 3, which is unreleased: no shipped Couch accepts its manifest, and the
+official integration feed's validator accepts protocol 1 and 2 only. So:
 
-Until then the built-in Hue integration in the Couch monorepo
-(`clients/couch-hue`) is the one that ships. The source here is that client,
-extracted so that it builds and tests alone. Keep the two aligned until the
-monorepo copy is deliberately retired. The one intended difference: the
-monorepo borrows `Light` and `Command` from its Home Assistant client, and
-this crate defines them itself (`src/light.rs`), with `tests/shape.rs` holding
-the serialized shape Couch already stores.
+- **the built-in Hue integration in the Couch monorepo (`clients/couch-hue`)
+  is still the one that ships**, and nothing here changes or replaces it. A
+  remote can run both at once; they are separate connections;
+- **this repository is not pinned by the official feed**, and CI fails if it
+  ever is while the package says protocol 3. The preview is installed from a
+  throwaway development source instead, onto one development remote, by the
+  owner, and removed the same day;
+- no packaged Hue reaches a real user until the protocol 3 train ships.
+
+## The package
+
+One Couch connection is one bridge. Everything on the bridge is a **child** of
+that connection, of one of three kinds the manifest declares:
+
+| kind | what it is | id | control |
+| --- | --- | --- | --- |
+| `light` | one lamp | `<light uuid>` | on / off / toggle, `set_light` |
+| `group` | one *room*'s grouped light | `room/<grouped_light uuid>` | on / off / toggle, `set_light` |
+| `scene` | one scene, recalled by being told `on` | `scene/<scene uuid>` | `on` |
+
+The connection itself does nothing: it has no capabilities and no controls of
+its own. The only setting is `host`, the bridge's address on the LAN. The
+application key and the bridge's exact certificate are **not** settings: they
+are the connection's credential, which Couch stores privately and hands back
+to the package on each start. Nothing else can read them, they are never in
+the environment or in argv, and no error text this package writes contains a
+key, a certificate or a path.
+
+### Limits of this preview
+
+- **No colour.** `xy` is refused. Colour temperature (mirek) is supported on a
+  lamp that reports a `mirek_schema`, and clamped to that lamp's range.
+- **Rooms, not zones.** A Hue *zone* becomes no `group` child in 0.1.0; its
+  scenes are still listed, with the zone's name as their room hint.
+- **State is a cache, refreshed from the bridge's event stream.** A row on the
+  remote follows a change made in the Hue app within about five seconds, where
+  built-in Hue follows it in about half a second. Live state pushed from a
+  package is a later step; until then the panel re-reads on its own round.
+- **A vanished or unreachable child stays listed as unavailable** rather than
+  disappearing: its state is unknown, never an inferred "off".
+
+### Versions
+
+`abuild` cannot spell a pre-release with a hyphen and Cargo cannot spell one
+without, so the same version has two spellings:
+
+| where | spelling |
+| --- | --- |
+| `Cargo.toml` | `0.1.0-pre1` (semver) |
+| `plugin.json`, the APK, the feed | `0.1.0_pre1` |
+
+`tools/integrations/build-apk.sh` checks that `plugin.json`'s version equals
+the APK version exactly, so `plugin.json` carries the underscore spelling.
+Every rebuild of a preview bumps the suffix (`_pre2`, ...): published bytes are
+immutable.
+
+### Why there is no `tests/admission.rs`
+
+The curated feed greps an integration's `tests/admission.rs` for four literal
+cases (`testing::conformance(`, `testing::failure(`, `testing::timeout_no_retry(`,
+`testing::spike(`). None of them can pass for this package, and not because of
+anything here: `couch_plugin::testing::Package::endpoint` starts the package
+with no credential, and a package whose manifest says `pairing.required`
+answers `unpaired` to everything without one. The harness has no way to hand
+one over.
+
+That is a core gap, recorded as G1 in the protocol 3 plan, and it is fixed at
+step T7 together with the feed's protocol check. **Publishing this package to
+the official feed waits for both**: T7, and a core change that lets an
+admission case start a paired package. Until then the cases that can be
+written are written, against a fake bridge, in this repository's own tests.
 
 ## Talking to the bridge
 
-Requests use HTTPS with a five-second deadline, no redirects, no proxy and a
-4 MiB response cap. The bridge's certificate names the bridge id rather than
-its address, and is issued by Signify's private CA or self-signed, so no
-public root can verify it. Pairing trusts the chosen LAN bridge once, records
-its exact certificate, and every later connection refuses any other one
+Requests use HTTPS with short deadlines, no redirects, no proxy and a 4 MiB
+response cap. The bridge's certificate names the bridge id rather than its
+address, and is issued by Signify's private CA or self-signed, so no public
+root can verify it. Pairing trusts the chosen LAN bridge once, records its
+exact certificate, and every later connection refuses any other one
 (`couch_sdk::tls::Pin`). Handshake signatures are always verified.
 
-`live::Live` keeps one credential-scoped session: a server-sent-events
-connection to `/eventstream/clip/v2` triggers refreshes, a poll recovers when
-the stream is down, and commands use their own connection so they never queue
-behind the stream. An acknowledged write is held for two seconds against older
+One credential-scoped session keeps a server-sent-events connection to
+`/eventstream/clip/v2` open and refreshes a cache from it; a poll recovers when
+the stream is down; writes use their own connection so they never queue behind
+the stream. An acknowledged write is held for two seconds against older
 snapshots, so a dimming step cannot be undone by a read that raced it.
 Unavailability always wins over a held value.
 
-Resource ids are the bridge's v2 UUIDs: a light is its UUID, a room is
-`room:<grouped_light UUID>`, a scene is `scene:<scene UUID>`.
-
 ## Build and test
 
-The crate depends on `couch-sdk` from one exact Couch Git revision, for the
-pinned-certificate verifier and the private credential writer. It does not
-copy them. The lock file and the Git revision are both part of review.
+The crate depends on `couch-plugin` and `couch-sdk` from one exact Couch Git
+revision, for the package server, the pinned-certificate verifier and the
+protocol types. It does not copy them. The lock file and the Git revision are
+both part of review.
 
 ```sh
 cargo test --locked --all-targets
-cargo build --locked --release --bin couch-hue
+cargo build --locked --release --bin couch-plugin-hue
 cargo fmt -- --check
 ```
-
-The tests use local HTTP fixtures only; no bridge and no household light is
-touched. They cover toggling from one fresh observation, grouped-light and
-scene endpoints, Hue error envelopes inside HTTP 200, unsafe addresses and
-ids, the settling guard, event-stream framing and limits, and private
-credential storage. The pinned TLS path itself has no fixture in this
-repository; in the monorepo it is exercised by `web/tests/hue.mjs`.
 
 TLS is `rustls` with the `ring` provider, which compiles C and assembly, so
 the ARM build needs an ARM musl C compiler. Couch supplies one (a pinned Zig
@@ -76,19 +121,24 @@ before it builds a package. From a Couch checkout at the pinned revision:
 ```sh
 here=$PWD
 (cd ../couch && tools/fetch-zig.sh && . tools/arm-cc-env.sh && cd "$here" && \
-  cargo build --locked --release --target armv7-unknown-linux-musleabihf --bin couch-hue)
+  cargo build --locked --release --target armv7-unknown-linux-musleabihf --bin couch-plugin-hue)
 ```
 
-CI runs both: the host tests, and the static ARMv7 build with Couch's tooling
-checked out at the pinned revision. CI also fails if `integration.json` or
-`plugin.json` appears before the adapter work is done on purpose.
+CI runs both: the host tests, and the static ARMv7 package build with Couch's
+tooling checked out at the pinned revision. CI also fails if `integration.json`
+stops saying protocol 3, or if the official feed pins this repository.
 
-To update the Couch SDK contract, change the `couch-sdk` `rev` in `Cargo.toml`
-to a reviewed full commit, regenerate `Cargo.lock`, and rerun the complete
-test suite. When the package adapter is added, `couch-plugin` must use the
-same revision.
+To update the Couch SDK contract, change the `rev` in `Cargo.toml` to a
+reviewed full commit (`couch-plugin` and `couch-sdk` must share it),
+regenerate `Cargo.lock`, and rerun the complete test suite. The rule for a
+preview is stricter: **the pin must be the commit the preview runtime was
+built from.**
 
 ## Command line
+
+The crate also builds a small read-mostly command line, `couch-hue`, which
+talks to a bridge through a settings file of its own. It is a development
+tool: it is not what the package runs, and the package never reads a file.
 
 ```sh
 couch-hue --settings ./hue.json pair BRIDGE_IP     # press the link button first
@@ -100,17 +150,23 @@ couch-hue --settings ./hue.json recall SCENE_UUID
 
 `lights`, `rooms`, `scenes` and `state` only read. The settings file holds the
 application key and the pinned certificate, is written atomically with mode
-`0600`, and must never be committed. Without `--settings` the path is the
-remote's own, `/opt/couch/hue-connection.json`.
+`0600`, and must never be committed.
+
+Nothing under `src/` writes to stdout. The package executable's stdout is the
+protocol socket Couch reads framed JSON from, and one stray byte on it costs
+the connection its child process; the command line's own printing is in
+`src/main.rs`, which the package never runs.
 
 ## Hardware status
 
-`lights`, `rooms` and `scenes` from this extracted crate were run read-only on
+`lights`, `rooms` and `scenes` from the extracted client were run read-only on
 2026-09-19 against one bridge through its saved pairing: the pinned
 certificate was accepted and the bridge listed 48 lights, 14 rooms and 181
 scenes in about one second per read. No light was switched, dimmed or
-recalled from this repository, and pairing was not repeated; commands and
-pairing have only fixture coverage here. The monorepo's record of the same
-client is in its `docs/philips-hue.md`.
+recalled from this repository, and pairing was not repeated.
+
+**The package has never spoken to a real bridge.** Everything it does is
+proved against a fake CLIP v2 bridge on the loopback interface, and the first
+real run is a supervised session on the owner's development remote.
 
 Licensed under GPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   admission:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -30,12 +30,46 @@ jobs:
           revisions = re.findall(r'couch-(?:plugin|sdk).*?rev = "([0-9a-f]{40})"', manifest)
           assert revisions and len(set(revisions)) == 1, "SDK dependencies must share one full Git revision"
           PY
-      - name: Refuse feed metadata until the package adapter exists
+      - name: Protocol 3, and the official feed must not pin this repository yet
         run: |
-          # The feed pins a repository by its integration.json. This repository
-          # holds only the client; see docs/protocol-needs.md.
-          test ! -e integration.json
-          test ! -e plugin.json
+          # This package speaks protocol 3, which is unreleased: no shipped
+          # Couch accepts its manifest and the feed's validator accepts only
+          # protocol 1 and 2, so pinning this repository there would publish
+          # something every remote refuses. It is installed meanwhile from a
+          # throwaway development source; see the README. The day protocol 3
+          # ships, this is the check that changes.
+          python3 - <<'PY'
+          import json, pathlib, urllib.request
+
+          integration = json.loads(pathlib.Path("integration.json").read_text(encoding="utf-8"))
+          plugin = json.loads(pathlib.Path("plugin.json").read_text(encoding="utf-8"))
+          assert set(integration) == {
+              "schema", "protocol_version", "id", "tier", "synthetic",
+              "cargo_manifest", "cargo_package", "binary", "manifest",
+          }, "integration.json has exactly the nine keys the feed reads"
+          assert integration["protocol_version"] == 3, "integration.json must say protocol 3"
+          assert plugin["protocol_version"] == 3, "plugin.json must say protocol 3"
+          assert plugin["min_core_protocol_version"] == 3, \
+              "min_core_protocol_version must equal the protocol version"
+          assert integration["id"] == plugin["id"] == "hue"
+          assert integration["manifest"] == "plugin.json"
+          assert integration["binary"] == "couch-plugin-hue"
+          assert plugin["executable"] == "bin/couch-plugin-hue"
+
+          # The feed is read when it can be read. A repository this job cannot
+          # fetch (private, offline, moved) is reported and not treated as a
+          # failure: only a pin that is really there fails this job.
+          url = "https://raw.githubusercontent.com/Couch-OS/couch-integrations/main/source-pin.json"
+          try:
+              with urllib.request.urlopen(url, timeout=30) as answer:
+                  pinned = sorted(json.load(answer)["integrations"])
+          except Exception as error:
+              print(f"could not read the feed's source pin ({error.__class__.__name__}); not checked")
+          else:
+              assert "hue" not in pinned, \
+                  "the official feed must not pin this repository while it is protocol 3"
+              print("the feed pins:", ", ".join(pinned) or "nothing")
+          PY
       - run: cargo fmt -- --check
       - run: cargo test --locked --all-targets
 
@@ -44,7 +78,7 @@ jobs:
   # Couch revision's Zig wrapper for C, rust-lld for the link.
   armv7:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -61,12 +95,13 @@ jobs:
           git init -q "$RUNNER_TEMP/couch"
           git -C "$RUNNER_TEMP/couch" fetch -q --depth 1 https://github.com/Couch-OS/couch.git "$revision"
           git -C "$RUNNER_TEMP/couch" checkout -q FETCH_HEAD
-      - name: Build the static ARMv7 client
+      - name: Build the static ARMv7 package binary
         run: |
           source=$PWD
           cd "$RUNNER_TEMP/couch"
           tools/fetch-zig.sh
           . tools/arm-cc-env.sh
           cd "$source"
-          cargo build --locked --release --target armv7-unknown-linux-musleabihf --bin couch-hue
-          file target/armv7-unknown-linux-musleabihf/release/couch-hue | grep -q 'statically linked'
+          cargo build --locked --release --target armv7-unknown-linux-musleabihf --bin couch-plugin-hue
+          file target/armv7-unknown-linux-musleabihf/release/couch-plugin-hue | grep -q 'statically linked'
+          ls -l target/armv7-unknown-linux-musleabihf/release/couch-plugin-hue

@@ -109,7 +109,6 @@ impl Session {
                 None
             }
         };
-        let fast = cached.is_some();
         let mut state = match cached {
             Some(s) => s,
             None => self.client.control_state(id)?,
@@ -131,7 +130,6 @@ impl Session {
             c.generation += 1;
             c.commanding = true;
         }
-        let started = Instant::now();
         let result = if let Some(p) = brightness {
             self.client
                 .command_for_state(&state, crate::Command::Brightness(p))
@@ -163,10 +161,6 @@ impl Session {
         c.dirty = true;
         c.lights.insert(id.into(), state.clone());
         // Do not extend the age of other lights based on this command.
-        println!(
-            "couch-hue: command acknowledged in {} ms (cached={fast})",
-            started.elapsed().as_millis()
-        );
         Ok(state)
     }
 }
@@ -289,7 +283,6 @@ fn stream(weak: Weak<Session>, settings: Settings) {
                 // Refresh after subscribing so changes during reconnect are covered.
                 s.refresh()?;
             }
-            println!("couch-hue: event stream connected");
             let mut reader = BufReader::new(response.into_body().into_reader());
             loop {
                 let changed = event(&mut reader)?;
@@ -312,9 +305,10 @@ fn stream(weak: Weak<Session>, settings: Settings) {
         }
         let _ = s.refresh();
         drop(s);
-        if result.is_err() {
-            println!("couch-hue: stream unavailable; polling, reconnect in {backoff}s");
-        }
+        // A dropped stream is not announced: stdout is the protocol socket.
+        // The cache says what is true - `streaming` is false and the snapshot
+        // is invalid - and a read that finds it stale answers `Transport`.
+        let _ = result;
         thread::sleep(Duration::from_secs(backoff));
         backoff = (backoff * 2).min(30);
     }

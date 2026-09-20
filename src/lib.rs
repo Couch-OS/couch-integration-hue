@@ -1,4 +1,10 @@
 //! Direct local Hue API v2 light control. Use from a worker thread.
+//!
+//! Nothing in this library writes to stdout. The package executable's stdout
+//! is the protocol socket Couch reads framed JSON from, and one stray byte on
+//! it costs the connection its child process.
+pub mod adapter;
+pub mod credential;
 mod light;
 pub mod live;
 pub mod resources;
@@ -8,6 +14,10 @@ pub use light::{Command, Light};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The one sentence a person is shown when the bridge stops accepting the key
+/// Couch holds. It names no key, no certificate and no path.
+pub const REPAIR: &str = "Hue no longer accepts this key. Pair again";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     Configuration,
