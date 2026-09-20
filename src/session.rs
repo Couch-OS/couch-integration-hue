@@ -55,8 +55,17 @@ const POLLING_LIFE: Duration = Duration::from_secs(5);
 /// How long an acknowledged write outranks an older observation.
 const SETTLING: Duration = Duration::from_secs(2);
 /// A Hue bridge takes one command per grouped light per second; sent more, it
-/// drops them. Couch refuses the second one instead, without a request.
+/// drops them silently, which leaves a room at a level nobody asked for. So a
+/// room's writes are **coalesced**: the newest one is held and sent when the
+/// window opens, and nothing is ever refused for being too soon.
+///
+/// Single lamps are not coalesced. Hue's own guidance is about ten commands a
+/// second for a light and one for a group, and a held key on the remote is
+/// nowhere near ten a second, so paying for a lamp what a room has to pay
+/// would only make a slider feel worse.
 pub const GROUP_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the writer thread looks for a room whose window has opened.
+const WRITER_STEP: Duration = Duration::from_millis(100);
 /// How often the poll re-reads the bridge while the stream is up.
 const POLL_WITH_STREAM: Duration = Duration::from_secs(60);
 const POLL_STEP: Duration = Duration::from_millis(500);
@@ -78,6 +87,16 @@ pub enum Reading {
 struct Pending {
     state: LightState,
     until: Instant,
+}
+
+/// A write that has been answered but not yet sent, because the bridge will
+/// not take another command for that room yet. At most one per room: a newer
+/// one replaces it, because it says the same thing more recently.
+#[derive(Debug, Clone)]
+struct Deferred {
+    control: Control,
+    body: Value,
+    target: LightState,
 }
 
 #[derive(Default)]
@@ -168,6 +187,12 @@ pub struct Session {
     refreshing: Mutex<()>,
     /// When each grouped light was last written to.
     paced: Mutex<HashMap<String, Instant>>,
+    /// The newest unsent write for each grouped light.
+    queued: Mutex<HashMap<String, Deferred>>,
+    /// A deferred write that failed after it was answered. The next request
+    /// about that child is told, once: a write this session said it had done
+    /// and then could not do is not allowed to disappear.
+    failed: Mutex<HashMap<String, Error>>,
 }
 
 impl Session {
@@ -199,8 +224,10 @@ impl Session {
             ready: Condvar::new(),
             refreshing: Mutex::new(()),
             paced: Mutex::new(HashMap::new()),
+            queued: Mutex::new(HashMap::new()),
+            failed: Mutex::new(HashMap::new()),
         });
-        for worker in [poll as fn(Weak<Session>), stream] {
+        for worker in [poll as fn(Weak<Session>), stream, writer] {
             let weak = Arc::downgrade(&session);
             thread::Builder::new()
                 .name("couch-hue".into())
@@ -231,6 +258,11 @@ impl Session {
 
     /// One child, from the cache. Never a request.
     pub fn read(&self, id: &str) -> Result<Reading> {
+        // A write this session answered and then could not send is reported
+        // here, once, rather than quietly forgotten.
+        if let Some(failure) = self.take_failure(id) {
+            return Err(failure);
+        }
         let cache = self.settled(COLD_STATUS)?;
         if !cache.fresh() {
             return match cache.failure.clone() {
@@ -268,32 +300,99 @@ impl Session {
         self.cache().map(|cache| cache.streaming).unwrap_or(false)
     }
 
-    /// A Hue bridge takes one command per grouped light per second. Refused
-    /// here, before a request, because the bridge's own answer is to drop it
-    /// silently and leave the room at a level nobody asked for.
-    fn pace(&self, id: &str) -> Result<()> {
-        let mut paced = self.paced.lock().map_err(|_| Error::Response)?;
+    /// Whether this grouped light's one-a-second window is open, claiming it
+    /// if it is. The one place that decides whether a room write goes now.
+    fn claim(&self, id: &str) -> bool {
+        let Ok(mut paced) = self.paced.lock() else {
+            return false;
+        };
         let now = Instant::now();
         if paced
             .get(id)
             .is_some_and(|last| now.duration_since(*last) < GROUP_INTERVAL)
         {
-            return Err(Error::Paced);
+            return false;
         }
         paced.insert(id.to_string(), now);
+        true
+    }
+
+    /// Hold the newest write for a room until its window opens. A write
+    /// already waiting is replaced: it said the same thing, less recently.
+    fn defer(&self, control: &Control, body: Value, target: LightState) {
+        if let Ok(mut queued) = self.queued.lock() {
+            queued.insert(
+                control.id.clone(),
+                Deferred {
+                    control: control.clone(),
+                    body,
+                    target,
+                },
+            );
+        }
+    }
+
+    /// Answer a write with the state it will leave behind, and hold that
+    /// state against older observations while the bridge catches up.
+    fn hold(&self, control: &Control, target: LightState) -> Result<()> {
+        let mut cache = self.cache()?;
+        cache.pending.insert(
+            control.id.clone(),
+            Pending {
+                state: target,
+                until: Instant::now() + SETTLING,
+            },
+        );
+        let mut settled = control.clone();
+        settled.state = target;
+        cache.set(settled);
+        cache.dirty = true;
         Ok(())
     }
 
-    /// Send one write and hold its result against older observations.
+    fn take_failure(&self, id: &str) -> Option<Error> {
+        self.failed.lock().ok()?.remove(id)
+    }
+
+    /// A write this session answered and then could not send. The optimistic
+    /// state goes, so the next read shows what is true, and the reason is
+    /// kept for whoever asks next.
+    fn remember(&self, id: &str, error: Error) {
+        if let Ok(mut cache) = self.cache() {
+            cache.pending.remove(id);
+            cache.dirty = true;
+        }
+        // Read the bridge before anybody is told, so the request that is
+        // told also sees what is really there rather than the level this
+        // session said it had set. Best effort: if another read is already
+        // running the cache is dirty and the poll picks it up.
+        let _ = self.refresh();
+        if let Ok(mut failed) = self.failed.lock() {
+            failed.insert(id.to_string(), error);
+        }
+    }
+
+    /// One write, answered with the state it leaves behind.
     ///
     /// `target` is what the child will be in afterwards, which is what the
     /// caller is acknowledged with: the read that follows a write has to
-    /// agree with the write.
+    /// agree with the write. A room whose window is not open is answered just
+    /// the same and sent when it opens - a person dragging a brightness key
+    /// must not be shown a refusal every other step.
     pub fn write(&self, control: &Control, body: Value, target: LightState) -> Result<LightState> {
-        let (kind, id) = control.endpoint();
-        if control.kind == Kind::Group {
-            self.pace(&control.id)?;
+        if let Some(failure) = self.take_failure(&control.id) {
+            return Err(failure);
         }
+        if control.kind == Kind::Group && !self.claim(&control.id) {
+            self.defer(control, body, target);
+            self.hold(control, target)?;
+            return Ok(target);
+        }
+        self.send(control, body, target)
+    }
+
+    fn send(&self, control: &Control, body: Value, target: LightState) -> Result<LightState> {
+        let (kind, id) = control.endpoint();
         {
             let mut cache = self.cache()?;
             cache.generation += 1;
@@ -314,16 +413,8 @@ impl Session {
             }
             return Err(error);
         }
-        cache.pending.insert(
-            control.id.clone(),
-            Pending {
-                state: target,
-                until: Instant::now() + SETTLING,
-            },
-        );
-        let mut settled = control.clone();
-        settled.state = target;
-        cache.set(settled);
+        drop(cache);
+        self.hold(control, target)?;
         Ok(target)
     }
 
@@ -380,6 +471,40 @@ impl Session {
         drop(cache);
         self.ready.notify_all();
         answer
+    }
+}
+
+/// Send the room writes whose one-a-second window has opened.
+///
+/// Nothing else runs here: a write that is due is one request, and a session
+/// that is dropped with a write still waiting is a child process that is
+/// going away, where the bridge will be re-read by whatever starts next.
+fn writer(weak: Weak<Session>) {
+    loop {
+        let Some(session) = weak.upgrade() else {
+            return;
+        };
+        let waiting: Vec<String> = match session.queued.lock() {
+            Ok(queued) => queued.keys().cloned().collect(),
+            Err(_) => return,
+        };
+        for id in waiting {
+            // The window first, so a room is never written to twice in one
+            // second by this thread and the request path together.
+            if !session.claim(&id) {
+                continue;
+            }
+            let deferred = match session.queued.lock() {
+                Ok(mut queued) => queued.remove(&id),
+                Err(_) => return,
+            };
+            let Some(deferred) = deferred else { continue };
+            if let Err(error) = session.send(&deferred.control, deferred.body, deferred.target) {
+                session.remember(&id, error);
+            }
+        }
+        drop(session);
+        thread::sleep(WRITER_STEP);
     }
 }
 
@@ -548,7 +673,13 @@ mod tests {
         let client = || Hue {
             base: format!("http://{address}"),
             key: "fixture".into(),
-            agent: ureq::Agent::new_with_defaults(),
+            // Bounded, always: a fixture that stops answering must cost one
+            // test two seconds rather than hanging the whole run.
+            agent: ureq::Agent::new_with_config(
+                ureq::Agent::config_builder()
+                    .timeout_global(Some(Duration::from_secs(2)))
+                    .build(),
+            ),
         };
         Session {
             reader: client(),
@@ -562,6 +693,8 @@ mod tests {
             ready: Condvar::new(),
             refreshing: Mutex::new(()),
             paced: Mutex::new(HashMap::new()),
+            queued: Mutex::new(HashMap::new()),
+            failed: Mutex::new(HashMap::new()),
         }
     }
 
@@ -658,14 +791,89 @@ mod tests {
     }
 
     #[test]
-    fn a_room_takes_one_command_a_second_and_the_second_one_is_refused() {
+    fn a_rooms_window_is_claimed_once_a_second_and_one_room_never_waits_for_another() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let session = session(listener.local_addr().unwrap());
-        assert_eq!(session.pace("room/a"), Ok(()));
-        assert_eq!(session.pace("room/a"), Err(Error::Paced));
+        assert!(session.claim("room/a"), "the first one goes");
+        assert!(!session.claim("room/a"), "and the second one waits");
         // A different room is a different bridge command.
-        assert_eq!(session.pace("room/b"), Ok(()));
+        assert!(session.claim("room/b"));
         drop(listener);
+    }
+
+    #[test]
+    fn the_newest_write_for_a_room_replaces_the_one_still_waiting() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let session = session(listener.local_addr().unwrap());
+        let mut room = lamp(Some(true), Some(10));
+        room.id = "room/a".into();
+        room.kind = Kind::Group;
+        for level in [20u8, 30, 40] {
+            let target = LightState {
+                brightness: Some(level),
+                ..room.state
+            };
+            session.defer(&room, json!({"dimming": {"brightness": level}}), target);
+        }
+        let queued = session.queued.lock().unwrap();
+        assert_eq!(queued.len(), 1, "one write waiting per room, not three");
+        assert_eq!(queued["room/a"].target.brightness, Some(40));
+    }
+
+    #[test]
+    fn a_write_that_could_not_be_sent_is_reported_to_whoever_asks_next_and_then_forgotten() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let remote = thread::spawn(move || {
+            // The read `remember` makes before anybody is told, so that the
+            // request which is told also sees what is really there.
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.method(), &tiny_http::Method::Get);
+            request
+                .respond(tiny_http::Response::from_string(
+                    json!({"errors": [], "data": [
+                        {"id": LAMP, "type": "light", "owner": {"rid": "d0"},
+                         "metadata": {"name": "Reading lamp"}, "on": {"on": true},
+                         "dimming": {"brightness": 50.0}},
+                        {"id": "z0", "type": "zigbee_connectivity", "owner": {"rid": "d0"},
+                         "status": "connected"},
+                    ]})
+                    .to_string(),
+                ))
+                .unwrap();
+        });
+        let session = session(address);
+        session
+            .cache()
+            .unwrap()
+            .apply(vec![lamp(Some(true), Some(50))], Instant::now());
+        // A write that was answered with a level the bridge never took.
+        session
+            .hold(
+                &lamp(Some(true), Some(50)),
+                LightState {
+                    on: Some(true),
+                    brightness: Some(90),
+                    mirek: None,
+                    xy: None,
+                },
+            )
+            .unwrap();
+        assert!(session.cache().unwrap().pending.contains_key(LAMP));
+
+        session.remember(LAMP, Error::Rejected);
+        // The optimistic state goes, so the next read shows what is true.
+        assert!(!session.cache().unwrap().pending.contains_key(LAMP));
+        assert_eq!(session.read(LAMP).unwrap_err(), Error::Rejected);
+        // Once. A failure that repeated for ever would be worse than none.
+        let Reading::Known(control) = session.read(LAMP).unwrap() else {
+            panic!("the lamp is still there");
+        };
+        assert_eq!(control.state.brightness, Some(50), "and it is what it is");
+        remote.join().unwrap();
     }
 
     #[test]

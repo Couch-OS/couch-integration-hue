@@ -416,51 +416,192 @@ fn on_off_and_toggle_come_from_what_the_cache_says_the_lamp_is() {
     assert_eq!(light_state(command(&missing, "on").unwrap()).on, Some(true));
 }
 
+/// How many PUTs the bridge has been sent for one grouped light.
+fn room_writes(bridge: &FakeBridge, room: usize) -> usize {
+    let path = format!(
+        "PUT /clip/v2/resource/grouped_light/{}",
+        bridge.room_group_id(room)
+    );
+    bridge
+        .requests()
+        .iter()
+        .filter(|line| **line == path)
+        .count()
+}
+
+/// Wait for the session's writer thread to send what it is holding.
+fn sent(bridge: &FakeBridge, room: usize, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while room_writes(bridge, room) < count {
+        assert!(Instant::now() < deadline, "the deferred write never went");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
-fn a_room_takes_one_command_a_second_and_the_next_one_is_refused_without_a_request() {
+fn a_dragged_room_slider_is_coalesced_and_never_refused() {
     let bridge = FakeBridge::start();
     let slot = slot::shared();
     let endpoint = paired(&bridge, &slot);
     let room = bridge.group_child(0);
-    let write = |action| ask(&endpoint, "group", Request::action(action).at(&room));
+    // Warm the cache, so the writes below are the only traffic.
+    status_of(&endpoint, "group", &room);
     bridge.clear_log();
 
-    let state = light_state(write(set_light(None, Some(30), None, None)).unwrap());
-    assert_eq!(state.brightness, Some(30));
-    // A slider dragged across a room sends one command a second; the bridge
-    // drops the rest silently, which leaves the room at a level nobody asked
-    // for, so the second one is refused here instead.
-    let refusal = write(set_light(None, Some(31), None, None)).unwrap_err();
-    assert_eq!(refusal.code, Error::Rejected);
-    assert!(refusal.reason.unwrap().text().contains("one room command"));
-    assert_eq!(
-        bridge
-            .requests()
-            .iter()
-            .filter(|line| line.starts_with("PUT"))
-            .count(),
-        1,
-        "the refused command must not have been sent"
-    );
-
-    // A second later it is taken again, and a different room never waited.
-    thread::sleep(couch_hue::session::GROUP_INTERVAL);
-    assert_eq!(
-        light_state(write(set_light(None, Some(32), None, None)).unwrap()).brightness,
-        Some(32)
-    );
-    assert_eq!(
-        light_state(
+    // Ten steps of a held brightness key, well inside one second. A Hue
+    // bridge takes one room command a second and drops the rest silently, so
+    // every one of these has to be answered - a refusal here is an error
+    // toast on somebody's television on every other step.
+    let started = Instant::now();
+    let mut answered = Vec::new();
+    for level in 20..30u8 {
+        let state = light_state(
             ask(
                 &endpoint,
                 "group",
-                Request::action(set_light(Some(true), None, None, None)).at(&bridge.group_child(1))
+                Request::action(set_light(None, Some(level), None, None)).at(&room),
             )
-            .unwrap()
-        )
-        .on,
-        Some(true)
+            .expect("a room write is answered, never refused"),
+        );
+        answered.push(state.brightness);
+    }
+    assert_eq!(
+        answered,
+        (20..30u8).map(Some).collect::<Vec<_>>(),
+        "every write is acknowledged with what it asked for"
     );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "ten answers took {:?}; they are not requests",
+        started.elapsed()
+    );
+    assert!(
+        room_writes(&bridge, 0) <= 2,
+        "ten writes became {} bridge commands",
+        room_writes(&bridge, 0)
+    );
+
+    // The last one is what the bridge is eventually told, and the cache and
+    // the bridge agree once it has been.
+    sent(&bridge, 0, 2);
+    assert_eq!(room_writes(&bridge, 0), 2);
+    assert_eq!(
+        bridge.resource("grouped_light", &bridge.room_group_id(0))["dimming"]["brightness"],
+        29.0,
+        "the last target is what the room was set to"
+    );
+    assert_eq!(
+        status_of(&endpoint, "group", &room)
+            .light
+            .expect("a room's state")
+            .brightness,
+        Some(29)
+    );
+}
+
+#[test]
+fn a_room_switched_off_at_the_end_of_a_drag_is_switched_off() {
+    let bridge = FakeBridge::start();
+    let slot = slot::shared();
+    let endpoint = paired(&bridge, &slot);
+    let room = bridge.group_child(1);
+    status_of(&endpoint, "group", &room);
+    bridge.clear_log();
+
+    // Levels, and then a decision. Coalescing must not lose the decision:
+    // the newest write is the one that goes, whatever kind it is.
+    for level in [40u8, 55, 70] {
+        ask(
+            &endpoint,
+            "group",
+            Request::action(set_light(None, Some(level), None, None)).at(&room),
+        )
+        .expect("a room write");
+    }
+    let off = light_state(
+        ask(&endpoint, "group", Request::command("off").at(&room)).expect("a room switched off"),
+    );
+    assert_eq!(off.on, Some(false));
+    sent(&bridge, 1, 2);
+    assert_eq!(
+        bridge.resource("grouped_light", &bridge.room_group_id(1))["on"]["on"],
+        false,
+        "the last thing asked for is the state the room is left in"
+    );
+    assert_eq!(
+        status_of(&endpoint, "group", &room)
+            .light
+            .expect("a room's state")
+            .on,
+        Some(false)
+    );
+}
+
+#[test]
+fn a_deferred_room_write_that_fails_is_reported_to_the_next_request_and_then_forgotten() {
+    let bridge = FakeBridge::start();
+    let slot = slot::shared();
+    let endpoint = paired(&bridge, &slot);
+    let room = bridge.group_child(2);
+    status_of(&endpoint, "group", &room);
+    bridge.clear_log();
+
+    // One write goes at once and claims the room's window.
+    ask(
+        &endpoint,
+        "group",
+        Request::action(set_light(None, Some(35), None, None)).at(&room),
+    )
+    .expect("the first room write");
+    sent(&bridge, 2, 1);
+
+    // The bridge starts refusing. The next write is held, answered, and then
+    // fails when it is finally sent - which nobody is waiting for any more.
+    bridge.reject_writes();
+    let held = light_state(
+        ask(
+            &endpoint,
+            "group",
+            Request::action(set_light(None, Some(80), None, None)).at(&room),
+        )
+        .expect("a held write is still answered"),
+    );
+    assert_eq!(held.brightness, Some(80));
+    sent(&bridge, 2, 2);
+    bridge.accept_writes();
+
+    // Whoever asks next is told, once.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let refusal = loop {
+        match ask(&endpoint, "group", Request::status().at(&room)) {
+            Err(failure) => break failure,
+            Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Ok(_) => panic!("a write that failed after it was answered disappeared"),
+        }
+    };
+    assert_eq!(refusal.code, Error::Rejected);
+    assert!(refusal
+        .reason
+        .expect("a sentence")
+        .text()
+        .contains("refused"));
+
+    // Once, and then the truth: the room is at what the bridge really took,
+    // not at the level this session said it had set.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = status_of(&endpoint, "group", &room)
+            .light
+            .expect("a room's state");
+        if state.brightness == Some(35) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the optimistic level outlived the write that failed: {state:?}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]

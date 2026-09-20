@@ -270,6 +270,9 @@ struct Shared {
     /// Whether the key it issued still works. A bridge that was factory reset,
     /// or whose entry somebody deleted in the Hue app.
     revoked: AtomicBool,
+    /// Whether every write comes back as a Hue failure inside an HTTP 200,
+    /// which is how a real bridge reports one.
+    rejecting: AtomicBool,
     log: Mutex<Vec<String>>,
     resources: Mutex<Vec<Value>>,
     listeners: Mutex<Vec<Sender<String>>>,
@@ -345,6 +348,7 @@ impl FakeBridge {
             pressed: AtomicBool::new(false),
             refusing: AtomicBool::new(false),
             revoked: AtomicBool::new(false),
+            rejecting: AtomicBool::new(false),
             log: Mutex::new(Vec::new()),
             resources: Mutex::new(household()),
             listeners: Mutex::new(Vec::new()),
@@ -411,6 +415,14 @@ impl FakeBridge {
     /// entry for Couch somebody deleted in the Hue app.
     pub fn revoke(&self) {
         self.shared.revoked.store(true, Ordering::SeqCst);
+    }
+    /// Refuse every write, the way a real bridge does: HTTP 200 with the
+    /// failure inside it. Reads keep working.
+    pub fn reject_writes(&self) {
+        self.shared.rejecting.store(true, Ordering::SeqCst);
+    }
+    pub fn accept_writes(&self) {
+        self.shared.rejecting.store(false, Ordering::SeqCst);
     }
 
     pub fn mode(&self) -> Mode {
@@ -732,6 +744,13 @@ fn write_resource(shared: &Arc<Shared>, path: &str, body: &[u8], tls: &mut Tls) 
             tls,
             404,
             &json!({"errors": [{"description": "resource not found"}]}),
+        );
+    }
+    if shared.rejecting.load(Ordering::SeqCst) {
+        return send(
+            tls,
+            200,
+            &json!({"errors": [{"description": "device is busy"}], "data": []}),
         );
     }
     let Ok(body) = serde_json::from_slice::<Value>(body) else {

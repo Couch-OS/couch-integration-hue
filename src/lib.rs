@@ -30,9 +30,6 @@ pub enum Error {
     Unavailable,
     Brightness,
     Rejected,
-    /// A room command sent sooner than the bridge will take one. Refused
-    /// without a request, because the bridge's own answer would be to drop it.
-    Paced,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,7 +42,6 @@ impl std::fmt::Display for Error {
         Self::Unavailable=>"This Hue light is missing or unreachable",
         Self::Brightness=>"Brightness requires a dimmable light and a value from 0 to 100",
         Self::Rejected=>"Hue rejected the light command",
-        Self::Paced=>"The Hue bridge takes one room command a second",
     })
     }
 }

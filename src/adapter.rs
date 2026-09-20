@@ -120,7 +120,6 @@ const VANISHED: &str = "This is no longer on the Hue bridge";
 const NOT_DIMMABLE: &str = "This Hue light cannot be dimmed";
 const NO_TEMPERATURE: &str = "This Hue light has no colour temperature";
 const NO_COLOUR: &str = "Couch cannot set a Hue light's colour yet";
-const PACED: &str = "The Hue bridge takes one room command a second; try again";
 const REFUSED: &str = "The Hue bridge refused that";
 
 fn message(text: &str) -> Reason {
@@ -141,7 +140,6 @@ fn refused(error: Error) -> SdkError {
         Error::Response => SdkError::Protocol,
         Error::Unavailable => SdkError::Rejected.because(message(VANISHED)),
         Error::Brightness => SdkError::Invalid.because(message(NOT_DIMMABLE)),
-        Error::Paced => SdkError::Rejected.because(message(PACED)),
         Error::Rejected => SdkError::Rejected.because(message(REFUSED)),
     }
 }
@@ -467,7 +465,6 @@ mod tests {
             Error::Response,
             Error::Unavailable,
             Error::Brightness,
-            Error::Paced,
             Error::Rejected,
         ] {
             let refusal = refused(error.clone());

@@ -92,14 +92,21 @@ characters of its id.
   package is a later step; until then the panel re-reads on its own round.
 - **A vanished or unreachable child stays listed as unavailable** rather than
   disappearing: its state is unknown, never an inferred "off".
-- **A room takes one command a second.** That is the bridge's limit for a
-  grouped light, and it drops the rest silently, which leaves a room at a
-  level nobody asked for. A second command inside that second is refused here
-  instead, with a sentence saying so. It is reported as `rejected`: a package
-  cannot say `busy` on the wire, because `couch_sdk::Error` has no such
-  variant and nothing maps to it. Making a dragged room slider re-queue
-  instead of showing a refusal needs either that variant or pacing in the
-  host, and is worth doing before a real user sees this.
+- **A room takes one command a second**, which is the bridge's limit for a
+  grouped light; sent more, it drops them silently and leaves the room at a
+  level nobody asked for. So a room's writes are **coalesced** rather than
+  refused: every one is answered at once with the state it asks for, at most
+  one command a second reaches the bridge, and the newest target replaces one
+  still waiting. A held brightness key therefore produces two bridge commands
+  a second and no refusals, instead of an error on every other step. Nothing
+  is lost in the other direction either: a write this package answered and
+  then could not send drops its optimistic state and is reported, once, to
+  whoever asks next. A `busy` variant in `couch_sdk::Error` would still be the
+  cleaner long-term answer for a host that wants to re-queue rather than be
+  told "done" early, but no core change is needed for this to behave.
+- **Single lamps are not coalesced.** Hue's guidance is about ten commands a
+  second for a light against one for a group, and a held key on the remote is
+  nowhere near ten a second, so a lamp's writes go straight out.
 
 ### Versions
 
