@@ -10,7 +10,7 @@ use std::{
 };
 
 use couch_plugin::{Error, Manifest, Request};
-use fake::{bridge::FakeBridge, slot::Slot};
+use fake::{bridge::FakeBridge, slot};
 use serde_json::{json, Value};
 
 const PLUGIN: &str = include_str!("../plugin.json");
@@ -213,7 +213,7 @@ fn the_package_puts_nothing_on_stdout_but_protocol_frames() {
 #[test]
 fn a_connection_couch_holds_no_key_for_is_unpaired_and_opens_no_socket() {
     let bridge = FakeBridge::start();
-    let slot = Slot::new();
+    let slot = slot::shared();
     let endpoint = slot.endpoint(bridge.settings_value(), None, Duration::from_secs(5));
     for request in [
         Request::children(None),

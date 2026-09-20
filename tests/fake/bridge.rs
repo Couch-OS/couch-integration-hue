@@ -267,6 +267,9 @@ struct Shared {
     pressed: AtomicBool,
     /// Whether pairing is refused outright, whatever the button says.
     refusing: AtomicBool,
+    /// Whether the key it issued still works. A bridge that was factory reset,
+    /// or whose entry somebody deleted in the Hue app.
+    revoked: AtomicBool,
     log: Mutex<Vec<String>>,
     resources: Mutex<Vec<Value>>,
     listeners: Mutex<Vec<Sender<String>>>,
@@ -348,6 +351,7 @@ impl FakeBridge {
             running: AtomicBool::new(true),
             pressed: AtomicBool::new(false),
             refusing: AtomicBool::new(false),
+            revoked: AtomicBool::new(false),
             log: Mutex::new(Vec::new()),
             resources: Mutex::new(household()),
             listeners: Mutex::new(Vec::new()),
@@ -407,6 +411,11 @@ impl FakeBridge {
     /// A bridge that refuses to pair at all, button or no button.
     pub fn refuse(&self) {
         self.shared.refusing.store(true, Ordering::SeqCst);
+    }
+    /// Stop accepting the key it issued: a bridge that was reset, or whose
+    /// entry for Couch somebody deleted in the Hue app.
+    pub fn revoke(&self) {
+        self.shared.revoked.store(true, Ordering::SeqCst);
     }
 
     pub fn mode(&self) -> Mode {
@@ -644,7 +653,7 @@ fn route(shared: &Arc<Shared>, request: &Request, tls: &mut Tls) {
         .get("hue-application-key")
         .cloned()
         .unwrap_or_default();
-    let authorised = key == shared.key;
+    let authorised = key == shared.key && !shared.revoked.load(Ordering::SeqCst);
     match (request.method.as_str(), request.path.as_str()) {
         // Pairing: the one unauthenticated route a bridge has.
         ("POST", "/api") => {

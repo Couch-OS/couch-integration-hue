@@ -52,6 +52,14 @@ key, a certificate or a path.
   package is a later step; until then the panel re-reads on its own round.
 - **A vanished or unreachable child stays listed as unavailable** rather than
   disappearing: its state is unknown, never an inferred "off".
+- **A room takes one command a second.** That is the bridge's limit for a
+  grouped light, and it drops the rest silently, which leaves a room at a
+  level nobody asked for. A second command inside that second is refused here
+  instead, with a sentence saying so. It is reported as `rejected`: a package
+  cannot say `busy` on the wire, because `couch_sdk::Error` has no such
+  variant and nothing maps to it. Making a dragged room slider re-queue
+  instead of showing a refusal needs either that variant or pacing in the
+  host, and is worth doing before a real user sees this.
 
 ### Versions
 
@@ -92,6 +100,15 @@ address, and is issued by Signify's private CA or self-signed, so no public
 root can verify it. Pairing trusts the chosen LAN bridge once, records its
 exact certificate, and every later connection refuses any other one
 (`couch_sdk::tls::Pin`). Handshake signatures are always verified.
+
+A status read never becomes a request. Couch asks a packaged connection for a
+child's state on every round of an open panel, so the bridge is read by
+background threads and a read is a lookup in a cache: answered in under a
+millisecond, and proved against the fake bridge's own request log. The first
+read of a child process has nothing to look up, so it waits up to a second for
+the first snapshot and then answers "unknown" - never "off". A snapshot that
+has gone stale (65 seconds with the event stream up, 5 without) is reported as
+the failure that made it stale, and never served.
 
 One credential-scoped session keeps a server-sent-events connection to
 `/eventstream/clip/v2` open and refreshes a cache from it; a poll recovers when

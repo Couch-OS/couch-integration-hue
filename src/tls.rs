@@ -74,26 +74,38 @@ impl Transport for PinnedTransport {
         true
     }
 }
+/// Reads and the command line: five seconds, the deadline this client has
+/// always had.
 pub fn agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
-    make_agent(certificate, false)
+    make_agent(certificate, false, 5, 5, Some(5))
 }
+/// Writes, which a person is waiting for with a finger on a slider: two
+/// seconds to connect, three for the answer, four altogether. A write that
+/// cannot be done in four seconds is better reported than waited for.
+pub fn write_agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
+    make_agent(certificate, false, 2, 3, Some(4))
+}
+/// The event stream, which has no deadline of its own: each idle read is
+/// bounded instead (see `await_input`).
 pub fn stream_agent(certificate: Arc<Mutex<Vec<u8>>>) -> ureq::Agent {
-    make_agent(certificate, true)
+    make_agent(certificate, true, 5, 5, None)
 }
-fn make_agent(certificate: Arc<Mutex<Vec<u8>>>, stream: bool) -> ureq::Agent {
+fn make_agent(
+    certificate: Arc<Mutex<Vec<u8>>>,
+    stream: bool,
+    connect: u64,
+    response: u64,
+    global: Option<u64>,
+) -> ureq::Agent {
     let tls = couch_sdk::tls::pinned_client_config(Arc::new(Pin::new(
         certificate,
         "Hue bridge certificate changed; pair again",
     )))
     .expect("TLS versions");
     let cfg = ureq::Agent::config_builder()
-        .timeout_global(if stream {
-            None
-        } else {
-            Some(std::time::Duration::from_secs(5))
-        })
-        .timeout_connect(Some(std::time::Duration::from_secs(5)))
-        .timeout_recv_response(Some(std::time::Duration::from_secs(5)))
+        .timeout_global(global.map(std::time::Duration::from_secs))
+        .timeout_connect(Some(std::time::Duration::from_secs(connect)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(response)))
         .max_redirects(0)
         .proxy(None)
         .build();

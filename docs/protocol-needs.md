@@ -1,9 +1,17 @@
 # What a Hue package needs from Couch
 
-This repository holds the Hue client. It does not yet hold a package adapter
-(`plugin.json`, `integration.json`, `tests/admission.rs`), because the package
-protocol as of Couch `00ab4da` (protocol version 2) cannot carry what built-in
-Hue does. This note says exactly what is missing and proposes the additions,
+> **Status, 2026-09-20.** Protocol 3 exists, unreleased, and this repository
+> now holds the package adapter built on it: `plugin.json`, `integration.json`
+> and `src/adapter.rs`, with pairing still to come. Sections (i) to (iv) below
+> are what was asked for and what was built; read them as the record of why
+> protocol 3 has the shape it has, not as a list of things that are missing.
+> Two are still open: an admission case cannot hand a credential to a package
+> that requires pairing, and the feed's metadata check still reads the literal
+> protocol 2. Both are for step T7; see the README.
+
+This note was written when this repository held the Hue client and no package
+adapter, because the package protocol as of Couch `00ab4da` (protocol version
+2) could not carry what built-in Hue does. This note says exactly what is missing and proposes the additions,
 as protocol version 3, concretely enough to implement. Sections (i) and (iv)
 are deliberately generic: the same pairing and state mechanisms serve LG
 webOS, Samsung Tizen, Android TV and Apple TV.

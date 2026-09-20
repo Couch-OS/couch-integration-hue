@@ -4,10 +4,11 @@
 //! is the protocol socket Couch reads framed JSON from, and one stray byte on
 //! it costs the connection its child process.
 pub mod adapter;
+pub mod catalog;
 pub mod credential;
 mod light;
-pub mod live;
 pub mod resources;
+pub mod session;
 pub mod settings;
 mod tls;
 pub use light::{Command, Light};
@@ -28,6 +29,9 @@ pub enum Error {
     Unavailable,
     Brightness,
     Rejected,
+    /// A room command sent sooner than the bridge will take one. Refused
+    /// without a request, because the bridge's own answer would be to drop it.
+    Paced,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,6 +44,7 @@ impl std::fmt::Display for Error {
         Self::Unavailable=>"This Hue light is missing or unreachable",
         Self::Brightness=>"Brightness requires a dimmable light and a value from 0 to 100",
         Self::Rejected=>"Hue rejected the light command",
+        Self::Paced=>"The Hue bridge takes one room command a second",
     })
     }
 }
@@ -96,6 +101,14 @@ fn data(v: Value) -> Result<Vec<Value>> {
     }
     v["data"].as_array().cloned().ok_or(Error::Response)
 }
+/// How long the caller is prepared to wait. A read on the command line and a
+/// write a person is watching are not the same request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deadlines {
+    Read,
+    Write,
+}
+
 pub struct Hue {
     base: String,
     key: String,
@@ -108,16 +121,29 @@ impl std::fmt::Debug for Hue {
 }
 impl Hue {
     pub fn new(address: &str, key: &str, certificate: &[u8]) -> Result<Self> {
+        Self::new_with(address, key, certificate, Deadlines::Read)
+    }
+    /// The same client with the deadlines the caller is waiting under.
+    pub fn new_with(
+        address: &str,
+        key: &str,
+        certificate: &[u8],
+        deadlines: Deadlines,
+    ) -> Result<Self> {
         if key.is_empty()
             || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             || certificate.is_empty()
         {
             return Err(Error::Configuration);
         }
+        let certificate = Arc::new(Mutex::new(certificate.to_vec()));
         Ok(Self {
             base: base(address)?,
             key: key.into(),
-            agent: tls::agent(Arc::new(Mutex::new(certificate.to_vec()))),
+            agent: match deadlines {
+                Deadlines::Read => tls::agent(certificate),
+                Deadlines::Write => tls::write_agent(certificate),
+            },
         })
     }
     /// The first connection trusts the selected LAN bridge. Save its certificate
@@ -157,7 +183,7 @@ impl Hue {
         let all = self.raw_resources()?;
         Self::parse_lights(&all)
     }
-    fn raw_resources(&self) -> Result<Vec<Value>> {
+    pub(crate) fn raw_resources(&self) -> Result<Vec<Value>> {
         data(response(
             self.agent
                 .get(format!("{}/clip/v2/resource", self.base))
@@ -265,7 +291,7 @@ impl Hue {
         };
         self.write_resource(kind, id, body)
     }
-    fn write_resource(&self, kind: &str, id: &str, body: Value) -> Result<()> {
+    pub(crate) fn write_resource(&self, kind: &str, id: &str, body: Value) -> Result<()> {
         if !valid_id(id) {
             return Err(Error::Configuration);
         }

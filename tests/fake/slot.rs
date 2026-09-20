@@ -10,7 +10,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, Weak,
+    },
     time::Duration,
 };
 
@@ -19,6 +22,27 @@ use couch_sdk::Credential;
 use serde_json::Value;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+/// One slot for the whole test binary, and no slot at all once the last test
+/// has let go of it.
+///
+/// Every test used to install its own, which on macOS means the kernel
+/// verifies the signature of a dozen freshly written 13 MB executables at
+/// once, through one system daemon - and a package that cannot complete its
+/// handshake inside `STARTUP_TIMEOUT` looks exactly like a package that is
+/// broken. Production installs a package once and starts it many times, which
+/// is what this does.
+static SHARED: Mutex<Weak<Slot>> = Mutex::new(Weak::new());
+
+/// The installed package, shared by every test in this binary.
+pub fn shared() -> Arc<Slot> {
+    let mut held = SHARED.lock().expect("the shared slot");
+    if let Some(slot) = held.upgrade() {
+        return slot;
+    }
+    let slot = Arc::new(Slot::new());
+    *held = Arc::downgrade(&slot);
+    slot
+}
 
 pub struct Slot {
     root: PathBuf,
