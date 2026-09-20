@@ -69,6 +69,17 @@ const WRITER_STEP: Duration = Duration::from_millis(100);
 /// How often the poll re-reads the bridge while the stream is up.
 const POLL_WITH_STREAM: Duration = Duration::from_secs(60);
 const POLL_STEP: Duration = Duration::from_millis(500);
+/// How long writes have to have stopped before the bridge is re-read because
+/// of them. The re-read is `GET /clip/v2/resource`, the whole bridge and the
+/// most expensive thing it serves: on a real one with forty-eight lamps a
+/// write took a tenth of a second by itself and over a second when it arrived
+/// behind the re-read the write before it had asked for. Somebody holding a
+/// brightness key is exactly that. Nothing is lost by waiting: a write is
+/// answered with the state it leaves behind and that state is held for
+/// [`SETTLING`], and a change made anywhere else is still read at once.
+const QUIET: Duration = Duration::from_millis(1200);
+/// The longest a re-read that is due is put off by writes that keep coming.
+const PUT_OFF: Duration = Duration::from_secs(5);
 
 /// What a read found.
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +123,8 @@ struct Cache {
     generation: u64,
     commanding: bool,
     dirty: bool,
+    /// When this session last wrote to the bridge. See [`QUIET`].
+    written: Option<Instant>,
     pending: HashMap<String, Pending>,
 }
 
@@ -406,10 +419,12 @@ impl Session {
             let mut cache = self.cache()?;
             cache.generation += 1;
             cache.commanding = true;
+            cache.written = Some(Instant::now());
         }
         let result = self.writer.write_resource(kind, id, body);
         let mut cache = self.cache()?;
         cache.commanding = false;
+        cache.written = Some(Instant::now());
         cache.generation += 1;
         cache.dirty = true;
         if let Err(error) = result {
@@ -527,15 +542,32 @@ fn writer(weak: Weak<Session>) {
     }
 }
 
+/// Whether the bridge is re-read now. On its schedule, always. Because
+/// something asked, once this session's own writes have been quiet for
+/// [`QUIET`] - or have kept coming for [`PUT_OFF`], so a read is never put off
+/// for good.
+fn due(
+    scheduled: bool,
+    dirty: bool,
+    since_write: Option<Duration>,
+    put_off: Option<Duration>,
+) -> bool {
+    scheduled
+        || dirty
+            && (since_write.is_none_or(|quiet| quiet >= QUIET)
+                || put_off.is_some_and(|waited| waited >= PUT_OFF))
+}
+
 /// Re-read the bridge: on a schedule, and whenever something asked for it.
 fn poll(weak: Weak<Session>) {
     let mut last: Option<Instant> = None;
+    let mut asked: Option<Instant> = None;
     loop {
         let Some(session) = weak.upgrade() else {
             return;
         };
-        let (streaming, dirty) = match session.cache() {
-            Ok(cache) => (cache.streaming, cache.dirty),
+        let (streaming, dirty, written) = match session.cache() {
+            Ok(cache) => (cache.streaming, cache.dirty, cache.written),
             Err(_) => return,
         };
         let interval = if streaming {
@@ -543,9 +575,18 @@ fn poll(weak: Weak<Session>) {
         } else {
             POLLING_LIFE
         };
-        if dirty || last.is_none_or(|at| at.elapsed() >= interval) {
+        if dirty {
+            asked.get_or_insert_with(Instant::now);
+        }
+        if due(
+            last.is_none_or(|at| at.elapsed() >= interval),
+            dirty,
+            written.map(|at| at.elapsed()),
+            asked.map(|at| at.elapsed()),
+        ) {
             let _ = session.refresh();
             last = Some(Instant::now());
+            asked = None;
         }
         drop(session);
         thread::sleep(POLL_STEP);
@@ -807,6 +848,22 @@ mod tests {
         );
         assert_eq!(session.children().unwrap_err(), Error::Authentication);
         drop(listener);
+    }
+
+    #[test]
+    fn the_bridge_is_reread_once_writes_go_quiet_and_never_put_off_for_good() {
+        let ms = Duration::from_millis;
+        // Its schedule is its schedule, whatever is being written.
+        assert!(due(true, false, Some(ms(10)), None));
+        // Nothing asked: nothing to do.
+        assert!(!due(false, false, None, None));
+        // A change made somewhere else, with no write of ours near it: now.
+        assert!(due(false, true, None, Some(ms(0))));
+        assert!(due(false, true, Some(QUIET), Some(ms(0))));
+        // Somebody is holding a brightness key: not behind every step...
+        assert!(!due(false, true, Some(ms(300)), Some(ms(900))));
+        // ...and not never.
+        assert!(due(false, true, Some(ms(300)), Some(PUT_OFF)));
     }
 
     #[test]
