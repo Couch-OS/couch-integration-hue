@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "couch-hue"
-version = "0.1.0-pre3"
+version = "0.1.0-pre4"
 dependencies = [
  "couch-plugin",
  "couch-sdk",

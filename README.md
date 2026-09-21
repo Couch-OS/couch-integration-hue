@@ -115,8 +115,8 @@ without, so the same version has two spellings:
 
 | where | spelling |
 | --- | --- |
-| `Cargo.toml` | `0.1.0-pre3` (semver) |
-| `plugin.json`, the APK, the feed | `0.1.0_pre3` |
+| `Cargo.toml` | `0.1.0-pre4` (semver) |
+| `plugin.json`, the APK, the feed | `0.1.0_pre4` |
 
 `tools/integrations/build-apk.sh` checks that `plugin.json`'s version equals
 the APK version exactly, so `plugin.json` carries the underscore spelling.
