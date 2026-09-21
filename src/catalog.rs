@@ -126,6 +126,38 @@ fn mirek_range(resource: &Value) -> Option<(u16, u16)> {
     .then_some(range)
 }
 
+/// The colour temperatures every tunable lamp in a room can show: the part
+/// their ranges share. A room with no tunable lamp has none, and so does one
+/// whose lamps share nothing.
+fn room_range(lamps: &[&(LightTraits, LightState)]) -> Option<(u16, u16)> {
+    let mut ranges = lamps.iter().filter_map(|(traits, _)| traits.mirek);
+    let first = ranges.next()?;
+    let (low, high) = ranges.fold(first, |(low, high), (l, h)| (low.max(l), high.min(h)));
+    (low <= high).then_some((low, high))
+}
+
+/// How close lamps have to be for a room to have one colour temperature:
+/// lamps of different models land a few mirek apart on the same request.
+const SAME_WHITE: u16 = 12;
+
+/// The room's colour temperature, when its lamps agree on one. The lamps that
+/// are on decide; lamps showing a colour have none and take no part. A room
+/// whose lamps disagree has none, and the first press gives it one.
+fn room_mirek(lamps: &[&(LightTraits, LightState)], range: Option<(u16, u16)>) -> Option<u16> {
+    let (low, high) = range?;
+    let lit: Vec<u16> = lamps
+        .iter()
+        .filter(|(_, state)| state.on == Some(true))
+        .filter_map(|(_, state)| state.mirek)
+        .collect();
+    let (coolest, warmest) = (*lit.iter().min()?, *lit.iter().max()?);
+    if warmest - coolest > SAME_WHITE {
+        return None;
+    }
+    let mean = lit.iter().map(|m| u32::from(*m)).sum::<u32>() / lit.len() as u32;
+    Some((mean as u16).clamp(low, high))
+}
+
 fn mirek_now(resource: &Value, range: Option<(u16, u16)>) -> Option<u16> {
     let (low, high) = range?;
     let value = u16::try_from(resource["color_temperature"]["mirek"].as_u64()?).ok()?;
@@ -176,6 +208,8 @@ pub fn catalog(all: &[Value]) -> Vec<Control> {
     }
 
     let mut controls = Vec::new();
+    // What each device's lamp can do and is doing, for the rooms below.
+    let mut white_of: BTreeMap<&str, (LightTraits, LightState)> = BTreeMap::new();
     for lamp in all.iter().filter(|value| value["type"] == "light") {
         let Some(id) = lamp["id"].as_str().filter(|id| valid_id(id)) else {
             continue;
@@ -190,6 +224,24 @@ pub fn catalog(all: &[Value]) -> Vec<Control> {
         });
         let range = mirek_range(lamp);
         let on = connected.then(|| lamp["on"]["on"].as_bool()).flatten();
+        if let Some(owner) = owner {
+            white_of.insert(
+                owner,
+                (
+                    LightTraits {
+                        dimmable: false,
+                        mirek: range,
+                        color: false,
+                    },
+                    LightState {
+                        on,
+                        brightness: None,
+                        mirek: on.and_then(|_| mirek_now(lamp, range)),
+                        xy: None,
+                    },
+                ),
+            );
+        }
         controls.push(Control {
             id: id.to_string(),
             kind: Kind::Light,
@@ -234,8 +286,18 @@ pub fn catalog(all: &[Value]) -> Vec<Control> {
         let state = all
             .iter()
             .find(|value| value["type"] == "grouped_light" && value["id"] == group);
-        let range = state.and_then(mirek_range);
         let on = state.and_then(|state| state["on"]["on"].as_bool());
+        // A grouped light takes a colour temperature and never reports one,
+        // nor a range. Both come from the lamps in the room.
+        let lamps: Vec<&(LightTraits, LightState)> = room["children"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|child| child["rid"].as_str())
+            .filter_map(|device| white_of.get(device))
+            .collect();
+        let range = room_range(&lamps);
+        let white = room_mirek(&lamps, range);
         controls.push(Control {
             id: format!("room/{group}"),
             kind: Kind::Group,
@@ -251,9 +313,7 @@ pub fn catalog(all: &[Value]) -> Vec<Control> {
                 brightness: on
                     .and_then(|_| state)
                     .and_then(|state| percent(&state["dimming"]["brightness"])),
-                mirek: on
-                    .and_then(|_| state)
-                    .and_then(|state| mirek_now(state, range)),
+                mirek: on.and(white),
                 xy: None,
             },
         });
@@ -333,6 +393,70 @@ mod tests {
             json!({"id": lamp(6), "type": "scene", "metadata": {"name": "Away"},
                    "group": {"rid": "n0", "rtype": "zone"}}),
         ]
+    }
+
+    #[test]
+    fn a_room_has_the_colour_temperature_its_lamps_share_and_agree_on() {
+        let white = |low, high, on, mirek: Option<u16>| {
+            (
+                LightTraits {
+                    dimmable: true,
+                    mirek: Some((low, high)),
+                    color: false,
+                },
+                LightState {
+                    on: Some(on),
+                    brightness: None,
+                    mirek,
+                    xy: None,
+                },
+            )
+        };
+        let plain = (
+            LightTraits {
+                dimmable: true,
+                mirek: None,
+                color: false,
+            },
+            LightState {
+                on: Some(true),
+                brightness: None,
+                mirek: None,
+                xy: None,
+            },
+        );
+        // The part of their ranges the tunable lamps share; a lamp with no
+        // colour temperature takes no part.
+        let (a, b) = (
+            white(153, 500, true, Some(366)),
+            white(153, 454, true, Some(370)),
+        );
+        let lamps = [&a, &b, &plain];
+        assert_eq!(room_range(&lamps), Some((153, 454)));
+        // Lamps of two models land a few mirek apart: that is one white.
+        assert_eq!(room_mirek(&lamps, Some((153, 454))), Some(368));
+        // Lamps that disagree, or none that are on, or a lamp showing a
+        // colour by itself: the room has no colour temperature to show.
+        let c = white(153, 500, true, Some(250));
+        assert_eq!(room_mirek(&[&a, &c], Some((153, 500))), None);
+        let off = white(153, 500, false, Some(366));
+        assert_eq!(room_mirek(&[&off], Some((153, 500))), None);
+        let colour = white(153, 500, true, None);
+        assert_eq!(room_mirek(&[&colour], Some((153, 500))), None);
+        assert_eq!(room_mirek(&[&a, &colour], Some((153, 500))), Some(366));
+        // No tunable lamp, or ranges that share nothing: no range, so the
+        // host never offers the control.
+        assert_eq!(room_range(&[&plain]), None);
+        let warm_only = white(400, 500, true, None);
+        let cool_only = white(153, 300, true, None);
+        assert_eq!(room_range(&[&warm_only, &cool_only]), None);
+
+        // And through the whole walk: the room takes its one tunable lamp's
+        // range and, that lamp being on, its colour temperature.
+        let controls = catalog(&household());
+        assert_eq!(controls[0].kind, Kind::Group);
+        assert_eq!(controls[0].traits.mirek, Some((153, 500)));
+        assert_eq!(controls[0].state.mirek, Some(300));
     }
 
     #[test]

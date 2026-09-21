@@ -20,8 +20,8 @@ const CARGO: &str = include_str!("../Cargo.toml");
 /// The version has two spellings, on purpose: Cargo needs semver's hyphen and
 /// `abuild` refuses one, so the package, the APK and the feed all say
 /// `0.1.0_pre1` and only `Cargo.toml` says `0.1.0-pre1`.
-const APK_VERSION: &str = "0.1.0_pre4";
-const CARGO_VERSION: &str = "0.1.0-pre4";
+const APK_VERSION: &str = "0.1.0_pre5";
+const CARGO_VERSION: &str = "0.1.0-pre5";
 
 #[test]
 fn the_two_manifests_say_the_same_package_and_the_feed_could_read_them() {
