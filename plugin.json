@@ -3,7 +3,7 @@
   "min_core_protocol_version": 3,
   "id": "hue",
   "label": "Philips Hue",
-  "version": "0.1.0_pre4",
+  "version": "0.1.0_pre5",
   "executable": "bin/couch-plugin-hue",
   "capabilities": [],
   "settings": [
