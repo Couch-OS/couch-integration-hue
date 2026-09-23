@@ -6,20 +6,18 @@ This repository holds the Philips Hue client for Couch and the installable
 pairing, lights, grouped rooms, scenes, and state kept current from the
 bridge's event stream.
 
-## What this is, and what it is not
+## Distribution
 
-**It is a development preview, and only that.** The package declares protocol
-version 3, which is unreleased: no shipped Couch accepts its manifest, and the
-official integration feed's validator accepts protocol 1 and 2 only. So:
+This package replaces the Hue client formerly built into Couch. It declares
+the released protocol 3 contract and is published by the official integration
+feed's preview channel. Couch keeps native light and scene controls; this
+package owns bridge pairing, pinned HTTPS, discovery, state, and commands.
 
-- **the built-in Hue integration in the Couch monorepo (`clients/couch-hue`)
-  is still the one that ships**, and nothing here changes or replaces it. A
-  remote can run both at once; they are separate connections;
-- **this repository is not pinned by the official feed**, and CI fails if it
-  ever is while the package says protocol 3. The preview is installed from a
-  throwaway development source instead, onto one development remote, by the
-  owner, and removed the same day;
-- no packaged Hue reaches a real user until the protocol 3 train ships.
+Core upgrades adopt an existing built-in Hue connection automatically. The
+old bridge address, application key, and certificate become package settings
+and a host-owned credential, while saved light, room, and scene references are
+rewritten to the child IDs below. The conversion keeps the connection ID and
+leaves the former private file in place for rollback.
 
 ## The package
 
@@ -80,7 +78,7 @@ Every line a conversation can produce is written out in `src/pairing.rs`, and
 the only thing in any of them that comes from the bridge is the last six
 characters of its id.
 
-### Limits of this preview
+### Limits
 
 - **No colour.** `xy` is refused. Colour temperature (mirek) is supported on a
   lamp that reports a `mirek_schema`, and clamped to that lamp's range.
@@ -115,29 +113,22 @@ without, so the same version has two spellings:
 
 | where | spelling |
 | --- | --- |
-| `Cargo.toml` | `0.1.0-pre5` (semver) |
-| `plugin.json`, the APK, the feed | `0.1.0_pre5` |
+| `Cargo.toml` | `0.1.0-pre6` (semver) |
+| `plugin.json`, the APK, the feed | `0.1.0_pre6` |
 
 `tools/integrations/build-apk.sh` checks that `plugin.json`'s version equals
 the APK version exactly, so `plugin.json` carries the underscore spelling.
 Every rebuild of a preview bumps the suffix (`_pre2`, ...): published bytes are
 immutable.
 
-### Why there is no `tests/admission.rs`
+### Admission
 
-The curated feed greps an integration's `tests/admission.rs` for four literal
-cases (`testing::conformance(`, `testing::failure(`, `testing::timeout_no_retry(`,
-`testing::spike(`). None of them can pass for this package, and not because of
-anything here: `couch_plugin::testing::Package::endpoint` starts the package
-with no credential, and a package whose manifest says `pairing.required`
-answers `unpaired` to everything without one. The harness has no way to hand
-one over.
-
-That is a core gap, recorded as G1 in the protocol 3 plan, and it is fixed at
-step T7 together with the feed's protocol check. **Publishing this package to
-the official feed waits for both**: T7, and a core change that lets an
-admission case start a paired package. Until then the cases that can be
-written are written, against a fake bridge, in this repository's own tests.
+`tests/admission.rs` uses `couch_plugin::testing_v3::children` with a
+host-owned fixture credential, so the shared harness drives the real pairing-
+required package through all 243 children. It also starts package slots
+concurrently and proves configuration is offline. `tests/pairing.rs` uses the
+shared pairing harness for success, refusal, cancellation, timeout, bounds,
+and credential secrecy.
 
 ## Talking to the bridge
 
@@ -207,14 +198,13 @@ here=$PWD
 ```
 
 CI runs both: the host tests, and the static ARMv7 package build with Couch's
-tooling checked out at the pinned revision. CI also fails if `integration.json`
-stops saying protocol 3, or if the official feed pins this repository.
+tooling checked out at the pinned revision. CI also validates that package and
+manifest metadata agree on protocol 3.
 
 To update the Couch SDK contract, change the `rev` in `Cargo.toml` to a
 reviewed full commit (`couch-plugin` and `couch-sdk` must share it),
-regenerate `Cargo.lock`, and rerun the complete test suite. The rule for a
-preview is stricter: **the pin must be the commit the preview runtime was
-built from.**
+regenerate `Cargo.lock`, and rerun the complete test suite. The pin must name a
+released core commit whose host accepts this manifest.
 
 ## Command line
 

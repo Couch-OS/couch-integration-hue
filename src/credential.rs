@@ -57,6 +57,9 @@ impl HueCredential {
         let map = credential.get();
         let text = |key: &str| map.get(key).and_then(Value::as_str).unwrap_or_default();
         let application_key = text("application_key").to_string();
+        // Built-in Couch releases stored the key and pinned certificate but
+        // not the bridge ID. It is presentation metadata; accepting it absent
+        // lets the package adopt those pairings without weakening TLS.
         let bridge_id = text("bridge_id").to_string();
         let certificate = decode(text("certificate")).ok_or(Error::Configuration)?;
         if application_key.is_empty()
@@ -64,9 +67,8 @@ impl HueCredential {
             || !application_key
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || bridge_id.is_empty()
-            || bridge_id.len() > 64
-            || !bridge_id.bytes().all(|b| b.is_ascii_alphanumeric())
+            || (!bridge_id.is_empty()
+                && (bridge_id.len() > 64 || !bridge_id.bytes().all(|b| b.is_ascii_alphanumeric())))
             || certificate.is_empty()
         {
             return Err(Error::Configuration);
@@ -177,11 +179,18 @@ mod tests {
         assert_eq!(read.certificate, vec![1, 2, 3, 4]);
         assert_eq!(format!("{read:?}"), "HueCredential { .. }");
         assert_eq!(format!("{stored:?}"), "Credential(..)");
+        let migrated = Credential::new(json!({
+            "application_key": "abc-123",
+            "certificate": "AQIDBA=="
+        }))
+        .unwrap();
+        let migrated = HueCredential::parse(&migrated).unwrap();
+        assert_eq!(migrated.bridge_id, "");
+        assert_eq!(migrated.certificate, vec![1, 2, 3, 4]);
         for broken in [
             json!({}),
             json!({"application_key": "", "bridge_id": "a", "certificate": "AQ=="}),
             json!({"application_key": "a b", "bridge_id": "a", "certificate": "AQ=="}),
-            json!({"application_key": "a", "bridge_id": "", "certificate": "AQ=="}),
             json!({"application_key": "a", "bridge_id": "a", "certificate": ""}),
             json!({"application_key": "a", "bridge_id": "a", "certificate": "not base64"}),
             json!({"application_key": "a", "bridge_id": "a"}),
