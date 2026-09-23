@@ -1,11 +1,7 @@
 //! The package against a bridge, through a real subprocess.
 //!
-//! The first case is the admission case a package with children would run if
-//! it could: `couch_plugin::testing_v3::children` makes exactly these
-//! assertions, and it cannot be used here because it starts the package with
-//! no credential and this package's manifest says `pairing.required`. Every
-//! assertion it makes is made below, by name, against `Endpoint::start_paired`
-//! and `couch_plugin::list_children`.
+//! The shared children admission case lives in `tests/admission.rs`. These
+//! cases cover Hue-specific cache, event stream, TLS, and resource behavior.
 //!
 //! The rest is what a bridge does that a fixture in memory does not: a listing
 //! that races an event stream, a read that must not become a request, a cache

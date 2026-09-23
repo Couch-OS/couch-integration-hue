@@ -30,16 +30,10 @@ jobs:
           revisions = re.findall(r'couch-(?:plugin|sdk).*?rev = "([0-9a-f]{40})"', manifest)
           assert revisions and len(set(revisions)) == 1, "SDK dependencies must share one full Git revision"
           PY
-      - name: Protocol 3, and the official feed must not pin this repository yet
+      - name: Validate protocol 3 package metadata
         run: |
-          # This package speaks protocol 3, which is unreleased: no shipped
-          # Couch accepts its manifest and the feed's validator accepts only
-          # protocol 1 and 2, so pinning this repository there would publish
-          # something every remote refuses. It is installed meanwhile from a
-          # throwaway development source; see the README. The day protocol 3
-          # ships, this is the check that changes.
           python3 - <<'PY'
-          import json, pathlib, urllib.request
+          import json, pathlib
 
           integration = json.loads(pathlib.Path("integration.json").read_text(encoding="utf-8"))
           plugin = json.loads(pathlib.Path("plugin.json").read_text(encoding="utf-8"))
@@ -56,19 +50,6 @@ jobs:
           assert integration["binary"] == "couch-plugin-hue"
           assert plugin["executable"] == "bin/couch-plugin-hue"
 
-          # The feed is read when it can be read. A repository this job cannot
-          # fetch (private, offline, moved) is reported and not treated as a
-          # failure: only a pin that is really there fails this job.
-          url = "https://raw.githubusercontent.com/Couch-OS/couch-integrations/main/source-pin.json"
-          try:
-              with urllib.request.urlopen(url, timeout=30) as answer:
-                  pinned = sorted(json.load(answer)["integrations"])
-          except Exception as error:
-              print(f"could not read the feed's source pin ({error.__class__.__name__}); not checked")
-          else:
-              assert "hue" not in pinned, \
-                  "the official feed must not pin this repository while it is protocol 3"
-              print("the feed pins:", ", ".join(pinned) or "nothing")
           PY
       - run: cargo fmt -- --check
       - run: cargo test --locked --all-targets
