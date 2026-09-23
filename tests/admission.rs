@@ -3,7 +3,7 @@
 mod fake;
 
 use couch_plugin::{
-    testing::{Adapter, Package},
+    testing::{self, Adapter},
     testing_v3::{self, ChildrenCase},
 };
 use couch_sdk::TypedAction;
@@ -46,7 +46,7 @@ fn concurrent_package_startup_is_offline_and_race_free() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                let package = Package::new(adapter());
+                let package = testing::Package::new(adapter());
                 let mut host = package.host();
                 assert_eq!(
                     host.configure(serde_json::json!({"host": "192.0.2.1"})),
